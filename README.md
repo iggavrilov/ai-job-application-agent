@@ -2,6 +2,8 @@
 
 Local Python 3.12+ Streamlit app for discovering and reviewing QA vacancies. No application submission, LinkedIn automation, browser automation, or authenticated employer access.
 
+Current status: [takeover validation](TAKEOVER_VALIDATION.md) supersedes the historical reports below. The full suite passes on Windows Python 3.11 and 3.12 without a private profile. [Current source evidence](SOURCE_CHECK_2026-10-18.md) records one verified Grafana board and two disabled research entries. See [Windows setup](WINDOWS_SETUP.md) for private profile creation, installation and running the corrected application.
+
 ## Windows setup (PowerShell)
 
 Open a terminal in this project folder:
@@ -13,7 +15,7 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1
 ```
 
-Open http://127.0.0.1:8501. Keep `candidate_profile.json` locally; it is deliberately ignored by Git. If copying a tracked checkout, supply this private file separately using `agent.models.Candidate` as the schema. The delivered file contains only facts supplied by the user; no PDF attachment was available, so CV verification has not been performed. Unknown contact details, citizenship, work authorization and salary preferences stay unknown; no language proficiency is inferred. Optional local PDF extraction:
+Open http://127.0.0.1:8501. Keep `candidate_profile.json` locally; it is deliberately ignored by Git. If copying a tracked checkout, supply this private file separately using `agent.models.Candidate` as the schema. Create or restore this private file from your actual CV; no personal profile is shipped in Git. Unknown contact details, citizenship, work authorization and salary preferences stay unknown; no language proficiency is inferred. Optional local PDF extraction:
 
 ```powershell
 .\.venv\Scripts\python.exe -m agent.cli extract-cv --pdf "C:\private\candidate-cv.pdf"

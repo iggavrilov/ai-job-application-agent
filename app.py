@@ -8,7 +8,8 @@ from agent.db import database, JobRow, MatchRow, SearchRun
 from agent.models import Job, Match
 from agent.collectors import plain
 from agent.discovery import discover
-from agent.matching import region
+from agent.matching import region, ranking_key
+from agent.settings import rules
 from agent.registry import load_boards
 
 st.set_page_config(page_title='QA Job Agent',layout='wide')
@@ -69,9 +70,11 @@ with factory() as session:
         minimum = st.sidebar.slider('Minimum match score',0,100,0)
         after = st.sidebar.date_input('Discovered on or after',value=date(2020,1,1))
         filtered = [r for r in filtered if country.lower() in r['Location'].lower() and title.lower() in r['Job title'].lower() and r['Match score']>=minimum and r['Discovered']>=after.isoformat()]
-        priorities = {'Moldova':0,'Romania':1,'European Union / Europe':2,'International remote / unspecified':3,'Other / unknown':4}
         order = st.sidebar.selectbox('Rank by',['Match score','Geographic priority'])
-        filtered.sort(key=lambda r:(priorities[r['Region']],-r['Match score']) if order=='Geographic priority' else (-r['Match score'],priorities[r['Region']]))
+        remote_preferred = rules().get('remote_preferred', True)
+        filtered.sort(key=lambda r:ranking_key(r,order,remote_preferred))
+        if remote_preferred:
+            st.caption('Remote roles are prioritized within the selected ranking; geographic ranking keeps Moldova, Romania and EU/Europe first.')
         st.dataframe(pd.DataFrame([{k:v for k,v in r.items() if not k.startswith('_')} for r in filtered]),hide_index=True,
           column_config={'Application link':st.column_config.LinkColumn('Original posting')},use_container_width=True)
         if filtered:

@@ -1,6 +1,7 @@
 """Requires the full requirements.txt environment; not part of the stdlib offline subset."""
 import json
 import pytest
+from pydantic import HttpUrl
 from sqlalchemy import select
 from agent.db import database, Company, Source, JobRow, JobObservation, MatchRow, SearchRun
 from agent.models import Job
@@ -22,10 +23,10 @@ def test_cross_source_identity_survives_changed_content(tmp_path,job):
         session.add_all([a,b]);session.flush()
         first,new=upsert_job(session,job,a)
         assert new
-        other=job.model_copy(update={'platform':'ashby','source_id':'mock-2','url':'https://example.org/2'})
+        other=job.model_copy(update={'platform':'ashby','source_id':'mock-2','url':HttpUrl('https://example.org/2')})
         merged,new=upsert_job(session,other,b)
         assert not new and merged.id==first.id
-        changed=other.model_copy(update={'title':'Senior QA Engineer','location':'Remote','url':'https://example.org/changed'})
+        changed=other.model_copy(update={'title':'Senior QA Engineer','location':'Remote','url':HttpUrl('https://example.org/changed')})
         merged,new=upsert_job(session,changed,b)
         assert not new and merged.id==first.id
         session.commit()

@@ -10,12 +10,14 @@ import httpx
 from agent.collectors import collect, normalize, remote_status
 from agent.matching import evaluate, region, mentions
 from agent.registry import load_boards
-from agent.settings import profile, rules
+from agent.settings import rules
+from tests.support import candidate_fixture
 from agent.models import Job
 
 
 class ReliabilityOffline(unittest.TestCase):
     def setUp(self):
+        self.candidate = candidate_fixture()
         self.job = Job(title='QA Engineer',company='Mock',location='Worldwide',remote='Remote',
           description='Playwright JavaScript SQL API testing Regression testing Drupal',
           url='https://example.org/job',platform='ashby',source_id='mock')
@@ -30,16 +32,16 @@ class ReliabilityOffline(unittest.TestCase):
     def test_restrictive_remote_wording(self):
         for description in ['We work worldwide. EU only.', 'Remote worldwide; must be based in Germany.', 'Remote from anywhere; candidates from selected countries only.', 'Worldwide except Moldova.', 'Remote worldwide, work permit required.']:
             with self.subTest(description=description):
-                result = evaluate(self.job.model_copy(update={'description':description}),profile(),rules(),False)
+                result = evaluate(self.job.model_copy(update={'description':description}),self.candidate,rules(),False)
                 self.assertNotEqual(result.eligibility,'Eligible')
                 self.assertIn(result.recommendation,['Needs Review','Not Recommended'])
 
     def test_conflicting_global_location(self):
-        result=evaluate(self.job.model_copy(update={'location':'Worldwide / Germany'}),profile(),rules(),False)
+        result=evaluate(self.job.model_copy(update={'location':'Worldwide / Germany'}),self.candidate,rules(),False)
         self.assertEqual(result.eligibility,'Needs Review')
 
     def test_changed_candidate_location(self):
-        p=profile().model_copy(update={'location':'unknown'})
+        p=self.candidate.model_copy(update={'location':'unknown'})
         self.assertEqual(evaluate(self.job,p,rules(),False).eligibility,'Needs Review')
 
     def test_cyprus_is_eu(self):
@@ -90,20 +92,26 @@ class ReliabilityOffline(unittest.TestCase):
             self.assertEqual(valid[0]['verification_status'],'pending')
 
     def test_registry_evidence_is_pending(self):
-        boards,errors=load_boards()
-        self.assertFalse(errors)
-        self.assertEqual(boards,[])
-        from agent.settings import ROOT
-        pending,errors=load_boards(ROOT/'config/company_boards.unverified.yaml')
-        self.assertFalse(errors)
-        self.assertEqual(len(pending),3)
-        self.assertTrue(all(b['verification_status']=='pending' and not b['enabled'] for b in pending))
+        # Exercise empty active/pending schemas independently of live source edits.
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'boards.yaml'
+            path.write_text('boards: []',encoding='utf-8')
+            boards,errors=load_boards(path)
+            self.assertFalse(errors)
+            self.assertEqual(boards,[])
+            path.write_text(json.dumps({'boards':[
+                {'company':'Synthetic '+platform,'platform':platform,'board':'mock','enabled':False}
+                for platform in ['greenhouse','lever','ashby']]}),encoding='utf-8')
+            pending,errors=load_boards(path)
+            self.assertFalse(errors)
+            self.assertEqual(len(pending),3)
+            self.assertTrue(all(b['verification_status']=='pending' and not b['enabled'] for b in pending))
 
     def test_skill_boundaries(self):
         self.assertFalse(mentions('JavaScript','Java'))
         self.assertFalse(mentions('NoSQL','SQL'))
         self.assertTrue(mentions('Required C++ development','C++'))
-        result=evaluate(self.job.model_copy(update={'description':'C++ required'}),profile(),rules(),False)
+        result=evaluate(self.job.model_copy(update={'description':'C++ required'}),self.candidate,rules(),False)
         self.assertIn('C++',result.missing_skills)
 
     def test_openai_cannot_remove_uncertainty(self):
@@ -118,7 +126,7 @@ class ReliabilityOffline(unittest.TestCase):
             def __exit__(self,*args):
                 pass
         with patch.dict(os.environ,{'OPENAI_API_KEY':'mock'}),patch.dict('sys.modules',{'openai':SimpleNamespace(OpenAI=Client)}):
-            result=evaluate(self.job.model_copy(update={'description':'Fluent English required; Playwright'}),profile(),rules())
+            result=evaluate(self.job.model_copy(update={'description':'Fluent English required; Playwright'}),self.candidate,rules())
         self.assertEqual(result.recommendation,'Needs Review')
         self.assertNotIn('Invented skill',result.matching_skills)
         self.assertEqual(result.method,'openai+rules')
@@ -133,7 +141,7 @@ class ReliabilityOffline(unittest.TestCase):
             def __exit__(self,*args):
                 pass
         with patch.dict(os.environ,{'OPENAI_API_KEY':'mock'}),patch.dict('sys.modules',{'openai':SimpleNamespace(OpenAI=Client)}):
-            result=evaluate(self.job,profile(),rules())
+            result=evaluate(self.job,self.candidate,rules())
         self.assertIn('fallback: ValidationError',result.method)
 
     def test_salary_configuration_rejected(self):
@@ -148,7 +156,7 @@ class ReliabilityOffline(unittest.TestCase):
     def test_language_proficiency_needs_review(self):
         for description in ['Fluent English', 'English C1', 'German native proficiency']:
             with self.subTest(description=description):
-                result=evaluate(self.job.model_copy(update={'description':self.job.description+'; '+description}),profile(),rules(),False)
+                result=evaluate(self.job.model_copy(update={'description':self.job.description+'; '+description}),self.candidate,rules(),False)
                 self.assertEqual(result.recommendation,'Needs Review')
 
     def test_verified_registry_requires_evidence(self):
@@ -172,8 +180,9 @@ class ReliabilityOffline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             with patch('agent.cli.ROOT',root), patch('agent.collectors.collect',side_effect=[RuntimeError('offline'),[self.job],[self.job]]),contextlib.redirect_stdout(io.StringIO()):
-                from agent.settings import ROOT
-                code=verify_boards(ROOT/'config/company_boards.unverified.yaml',include_disabled=True)
+                registry=root/'boards.yaml'
+                registry.write_text(json.dumps({'boards':[{'company':'Mock','platform':p,'board':'mock','enabled':False} for p in ['greenhouse','lever','ashby']]}),encoding='utf-8')
+                code=verify_boards(registry,include_disabled=True)
             report=json.loads((root/'data/board_verification.json').read_text(encoding='utf-8'))
             self.assertEqual(code,1)
             self.assertEqual(len(report['results']),3)

@@ -1,3 +1,5 @@
+> Historical report. Current takeover status supersedes this document: [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md) and [SOURCE_CHECK_2026-10-18.md](SOURCE_CHECK_2026-10-18.md). Private candidate data is never part of the repository.
+
 # Validation report — 2026-10-16
 
 ## Results

@@ -1,21 +1,17 @@
-# Disabled research queue. None of these identifiers has been verified.
+# Disabled research queue. API and employer verification are still required.
 # Not loaded by discovery; verify explicitly with --registry and --include-disabled.
 boards:
-  - company: Grafana Labs
-    platform: greenhouse
-    board: grafanalabs
-    enabled: false
-    verification_status: pending
-    notes: "Existing starter entry. Confirm board ownership, endpoint and current EU/remote hiring scope."
   - company: PostHog
     platform: ashby
     board: posthog
     enabled: false
     verification_status: pending
-    notes: "Existing starter entry. Confirm board ownership, endpoint and Moldova/European hiring eligibility."
+    evidence_url: https://posthog.com/careers
+    notes: "Robots endpoint returned 401 on 2026-10-18; API not queried. Board ownership remains unconfirmed."
   - company: Wealthsimple
-    platform: lever
+    platform: ashby
     board: wealthsimple
     enabled: false
     verification_status: pending
-    notes: "Existing starter entry. Primarily a collector coverage check; do not assume European hiring."
+    evidence_url: https://www.wealthsimple.com/en-ca/careers
+    notes: "Official careers page now links to jobs.ashbyhq.com/wealthsimple. Legacy Lever returned an empty list. Ashby API remains unverified; no European eligibility assumed."

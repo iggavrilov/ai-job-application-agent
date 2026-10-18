@@ -1,3 +1,5 @@
+> Historical report. Current takeover status supersedes this document: [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md) and [SOURCE_CHECK_2026-10-18.md](SOURCE_CHECK_2026-10-18.md). Private candidate data is never part of the repository.
+
 # Employer source verification
 
 Current independently verified board count: **0**. No live discovery succeeded in the managed environment. The previous sandbox socket denial remains the blocker; this development pass made no further network attempts.

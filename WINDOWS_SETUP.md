@@ -1,12 +1,26 @@
 # Windows setup and daily discovery
 
-The project is prepared for Windows Python 3.12+, but has not been executed on Windows. Offline checks passed in the managed Linux environment. Full pytest, SQLite runtime, Streamlit startup and live sources still need verification. No application is submitted by any command.
+Current validation is in [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md). The full suite passed on Windows Python 3.11.0 and 3.12.14; Python 3.12+ remains the documented target. Full tests use synthetic inputs and require no private profile. Real discovery still requires your private profile. No command submits applications.
 
 ## 1. Prerequisites and private files
 
 Install 64-bit Python 3.12 or later from python.org with the Python launcher. Git is optional. Use a normal local folder, for example `C:\Projects\job-agent`, with write access. An internet connection must permit your package index and the three public API domains. Do not disable TLS verification or bypass a company proxy.
 
-Copy the existing project into that folder, including your local private `candidate_profile.json`. That file is deliberately excluded from Git: a Git checkout alone will not contain it. Keep the delivered profile separately in private storage; never paste the CV or personal profile into a repository issue. The current profile uses supplied facts; the PDF was unavailable for independent verification. If the profile is missing, restore your private copy before discovery. The schema is `agent.models.Candidate`.
+Clone the private GitHub repository and check out the PR branch. Restore your own `candidate_profile.json` privately if you already have one. It is excluded from Git; cloning does not restore it. Do not publish the CV, extracted text or profile in issues, PRs or CI artifacts.
+
+To create it locally from a real PDF:
+
+1. Extract locally with `.\.venv\Scripts\python.exe -m agent.cli extract-cv --pdf "C:\private\candidate-cv.pdf"`. This prints CV text; do not capture it in public logs.
+2. Review the PDF and transcribe only supported facts into a UTF-8 JSON object at the project root. Required fields: `name` (string), `location` (string), `experience_years` (nonnegative whole number), `positions`, `skills`, `projects`, `certifications` (arrays of strings), and `provenance` (string describing the source and any calculation limits). Preserve role dates/employers in positions and relevant project context in projects. Use conservative completed QA years, without adding overlapping roles or unrelated work.
+3. Optional fields: `languages` defaults to `[]`; `salary_expectations`, `citizenship`, `work_authorization`, `email`, `telephone` default to `"unknown"`. Do not infer them from residence, CV language or job title. Unsupported required facts need clarification from the candidate; never fill them with invented qualifications.
+4. Validate without printing personal data:
+
+```powershell
+.\.venv\Scripts\python.exe -c "from agent.settings import profile; profile(); print('Profile schema valid')"
+git check-ignore candidate_profile.json
+```
+
+UTF-8 with or without a Windows BOM is accepted. Loading errors provide guidance without echoing profile values. Schema validity confirms structure only; the user must review factual accuracy. Tests contain an explicitly synthetic candidate under `tests/support.py`; never copy it into a permanent personal profile.
 
 ## 2. Install (PowerShell)
 
@@ -17,11 +31,13 @@ Set-Location C:\Projects\job-agent
 py -0p
 py -3.12 --version
 py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
-.\.venv\Scripts\python.exe -m agent.diagnostics
 .\.venv\Scripts\python.exe -m pytest -q
 ```
+
+After restoring/creating your private profile, run `.\.venv\Scripts\python.exe -m agent.diagnostics`; exit 1 means readiness is incomplete (including a missing profile). This is separate from the profile-independent tests.
 
 Activation is unnecessary, so PowerShell execution-policy changes are unnecessary. If you use Python 3.13+ instead of 3.12, change the launcher selector accordingly. Do not copy the Linux `.venv` onto Windows; recreate it with the command above.
 
@@ -37,7 +53,7 @@ Edit local `.env`, never `.env.example`, for secrets:
 
 `config/search_rules.yaml`: title include/exclude keywords, score weights, request interval. Keep `minimum_salary: null`; missing/low salary never reduces compatibility. Salary is preserved when supplied. Technical/experience/geography/additional weights receive the redistributed salary weight.
 
-`config/company_boards.yaml`: employer, source platform (`greenhouse`, `lever`, `ashby`), board identifier, enabled flag and verification notes. The active registry is empty. Three existing starter entries are disabled in `config/company_boards.unverified.yaml`. **No boards are independently verified yet.** The registry is intentionally small; add employers only after finding the actual board link on their official careers site. A successful API response alone does not establish employer ownership or Moldova eligibility.
+`config/company_boards.yaml`: employer, source platform (`greenhouse`, `lever`, `ashby`), board identifier, enabled flag and verification notes. Grafana is enabled after API and official careers-link verification. PostHog and Wealthsimple remain disabled in the research queue. See SOURCE_CHECK_2026-10-18.md for exact observations and limits. The registry is intentionally small; add employers only after finding the actual board link on their official careers site. A successful API response alone does not establish employer ownership or Moldova eligibility.
 
 For Moldova/Romania/EU coverage, verify actual employer careers pages first, then confirm the country terms in each vacancy. Never guess a board slug from a company name. All EU countries, including Cyprus, share the EU region. Remote Europe or EU-only does not establish eligibility for a Moldova resident.
 

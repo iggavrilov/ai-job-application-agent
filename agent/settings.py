@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import yaml
 from dotenv import load_dotenv
+from pydantic import ValidationError
 from agent.models import Candidate
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / '.env')
@@ -29,7 +30,19 @@ def rules():
 
 
 def profile():
-    return Candidate.model_validate_json((ROOT / 'candidate_profile.json').read_text(encoding='utf-8'))
+    path = ROOT / 'candidate_profile.json'
+    try:
+        # Windows PowerShell commonly writes UTF-8 with a BOM.
+        content = path.read_text(encoding='utf-8-sig')
+    except FileNotFoundError:
+        raise ValueError('Missing local candidate_profile.json; follow WINDOWS_SETUP.md to create it from your real CV') from None
+    except (OSError, UnicodeError):
+        raise ValueError('Cannot read local candidate_profile.json; check permissions and UTF-8 encoding') from None
+    try:
+        return Candidate.model_validate_json(content)
+    except ValidationError:
+        # Pydantic errors include input values, which can contain private CV facts.
+        raise ValueError('candidate_profile.json does not match the Candidate schema; see WINDOWS_SETUP.md') from None
 
 
 def extract_pdf(path):

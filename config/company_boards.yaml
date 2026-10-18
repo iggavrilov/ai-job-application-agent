@@ -1,3 +1,11 @@
 # Active discovery registry: add only API-verified, employer-owned boards.
 # Pending entries are in company_boards.unverified.yaml and are disabled.
-boards: []
+boards:
+  - company: Grafana Labs
+    platform: greenhouse
+    board: grafanalabs
+    enabled: true
+    verification_status: verified
+    verified_at: '2026-10-18T19:25:46.753035+00:00'
+    evidence_url: https://grafana.com/careers/
+    notes: 'Official careers page links to job-boards.greenhouse.io/grafanalabs. API returned 114 postings, zero matching configured QA titles. Eligibility remains per vacancy.'

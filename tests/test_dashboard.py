@@ -1,0 +1,45 @@
+from pathlib import Path
+import pytest
+from sqlalchemy import select
+from streamlit.testing.v1 import AppTest
+from agent.db import database, Company, Source, JobRow, MatchRow
+from agent.discovery import upsert_job
+from agent.models import Job
+from agent.matching import evaluate, ranking_key
+from agent.settings import rules
+
+
+@pytest.mark.parametrize('populated', [False, True])
+def test_dashboard_load_and_review(tmp_path, monkeypatch, candidate, populated):
+    target = 'sqlite:///' + str(tmp_path / 'dashboard.db')
+    monkeypatch.setenv('DATABASE_URL', target)
+    factory = database(target)
+    if populated:
+        job = Job(title='QA Engineer',company='Synthetic employer',location='Moldova',remote='Remote',
+                  description='Playwright SQL',url='https://example.org/qa',platform='lever',source_id='1')
+        with factory() as session:
+            company = Company(name=job.company)
+            session.add(company); session.flush()
+            source = Source(company_id=company.id,platform='lever',board='synthetic')
+            session.add(source); session.flush()
+            row, _ = upsert_job(session, job, source)
+            session.add(MatchRow(job_id=row.id,payload=evaluate(job,candidate,rules(),False).model_dump_json()))
+            session.commit()
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    assert not app.exception
+    if populated:
+        assert app.subheader[0].value == 'QA Engineer'
+        next(button for button in app.button if button.label == 'Mark as Reviewed').click().run()
+        assert not app.exception
+        with factory() as session:
+            assert session.scalar(select(JobRow)).status == 'Reviewed'
+    else:
+        assert any('No stored relevant vacancies' in item.value for item in app.info)
+
+
+def test_remote_and_geographic_ranking():
+    onsite = {'Region':'Moldova','Remote status':'Onsite','Match score':100}
+    remote = {'Region':'Romania','Remote status':'Remote','Match score':80}
+    assert ranking_key(remote,'Match score') < ranking_key(onsite,'Match score')
+    assert ranking_key(onsite,'Geographic priority') < ranking_key(remote,'Geographic priority')
+    assert ranking_key(onsite,'Match score',False) < ranking_key(remote,'Match score',False)
