@@ -146,3 +146,54 @@ def test_geographic_only_requirements_do_not_lower_professional_fit(candidate,cl
 def test_moldavia_label_alone_is_not_verified_moldova_access(candidate):
     result=evaluate(qa('Moldavia'),candidate,rules(),False)
     assert result.eligibility=='Needs Review' and result.in_main_recommendations
+
+
+@pytest.mark.parametrize('clause',[
+    'German citizenship required.',
+    'Minimum 10 years of residence in Germany required.',
+])
+def test_citizenship_and_residence_years_do_not_become_professional_requirements(candidate,clause):
+    baseline=evaluate(qa(),candidate,rules(),False)
+    changed=evaluate(qa(description=qa().description+'; '+clause),candidate,rules(),False)
+    assert changed.professional_score==baseline.professional_score
+    assert changed.professional_fit==baseline.professional_fit
+    assert changed.eligibility=='Needs Review'
+
+
+@pytest.mark.parametrize('clause',[
+    'Remote access is subject to location approval.',
+    'Eligibility pending employer confirmation.',
+    'Relocation required.',
+])
+def test_conditional_moldova_remote_access_is_never_automatically_confirmed(candidate,clause):
+    result=evaluate(qa(description=qa().description+'; '+clause),candidate,rules(),False)
+    assert result.eligibility=='Needs Review' and result.in_main_recommendations
+    assert 'not confirmed' in result.geographic_reason
+
+
+def test_moldova_eu_conflict_has_explicit_explanation_and_no_professional_penalty(candidate):
+    base=qa('Moldova; Romania')
+    job=base.model_copy(update={'description':base.description+'; Work from the European Union and work permission are required.'})
+    baseline=evaluate(base,candidate,rules(),False)
+    changed=evaluate(job,candidate,rules(),False)
+    assert changed.eligibility=='Needs Review'
+    assert 'conflicting' in changed.geographic_reason and 'EU' in changed.geographic_reason
+    assert changed.professional_score==baseline.professional_score
+    assert changed.professional_fit==baseline.professional_fit
+
+
+def test_ai_professional_confidence_cannot_promote_uncertain_eligibility(candidate,monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from agent.models import Assessment
+    import openai
+    ai=Assessment(technical=1,experience=1,additional=1,matching_skills=[],missing_skills=[],
+                  mandatory_requirements=[],uncertain_mandatory=False,explanation='Professional evidence only.')
+    client=MagicMock()
+    client.__enter__.return_value=client
+    client.chat.completions.create.return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=ai.model_dump_json()))])
+    monkeypatch.setattr(openai,'OpenAI',lambda **kwargs:client)
+    monkeypatch.setenv('OPENAI_API_KEY','synthetic-test-key')
+    result=evaluate(qa('Europe'),candidate,rules(),True)
+    assert result.method=='openai+rules' and result.professional_fit=='Strong Match'
+    assert result.eligibility=='Needs Review' and result.recommendation=='Needs Review'

@@ -91,8 +91,8 @@ def geography(job, candidate):
         return 'Ineligible', 'Explicit exclusion of Moldova detected.'
     if re.search(r'(must|required|only).{0,70}(us citizen|u\.s\. citizen|security clearance)', text):
         return 'Needs Review', 'Citizenship or clearance required; candidate citizenship unknown.'
-    if re.search(r'(work authori[sz]|right to work|visa|citizenship|citizen|passport|sponsorship|work permit)',combined):
-        return 'Needs Review', 'Work authorization/citizenship terms require verification.'
+    if re.search(r'(work authori[sz]|right to work|visa|citizenship|citizen|passport|sponsorship|work permit|work permission|residen)',combined):
+        return 'Needs Review', 'Work authorization, citizenship or residence terms require verification.'
     # Restrictive language takes precedence over a worldwide marketing statement.
     restriction = re.search(r'(must|only|required).{0,65}(reside|based|located|resident|countries|country|eu\b|eea\b|us\b|usa\b|uk\b|europe)', combined)
     restriction = restriction or re.search(r'(selected|eligible|supported|approved) (countries|locations)|countries only|limited to|restricted to', combined)
@@ -101,6 +101,8 @@ def geography(job, candidate):
         if re.search(r'(must|only|required).{0,60}(reside|based|located|resident).{0,30}(united states|united kingdom|canada|usa|uk\b)',text):
             return 'Ineligible', 'Explicit residency restriction excludes current Moldova location.'
         return 'Needs Review', 'Explicit hiring-location restriction must be checked against Moldova residence.'
+    if re.search(r'subject to.{0,45}(eligib|approv|country|location)|eligib\w*.{0,35}(pending|unconfirmed|verification|confirm)|relocation (?:is )?(?:required|mandatory)', combined):
+        return 'Needs Review', 'Hiring access is conditional, pending verification or requires relocation; Moldova eligibility is not confirmed.'
     if job.remote == 'Remote' and ('moldova' in location or re.search(r'(hire|hiring|candidates|work|based|remote).{0,50}moldova',text)):
         return 'Eligible', 'Explicit Moldova remote location; no authorization restriction detected.'
     worldwide = bool(re.search(r'\b(worldwide|anywhere|global)\b', location) or re.search(r'(remote|work).{0,20}(worldwide|from anywhere)',text))
@@ -123,7 +125,8 @@ def mentions(text, skill):
 
 
 def rule_assessment(job, candidate):
-    text = plain(job.description).lower()
+    text = '. '.join(clause for clause in re.split(r'[\n.;]', plain(job.description))
+                     if not geography_only_requirement(clause)).lower()
     matching = [s for s in candidate.skills if mentions(text, s)]
     mandatory = [s.strip() for s in re.split(r'[\n.;]',plain(job.description))
                  if re.search(r'\b(must|required|mandatory|essential|minimum)\b',s,re.I)

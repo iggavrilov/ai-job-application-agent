@@ -69,11 +69,11 @@ def test_grouped_postings_expose_each_source_url(tmp_path,monkeypatch,candidate)
     with factory() as session:
         row=session.scalar(select(JobRow).order_by(JobRow.id))
         source=session.scalar(select(Source))
-        alias=Job.model_validate_json(row.payload).model_copy(update={'source_id':'alias','url':HttpUrl('https://example.org/alias')})
+        alias=Job.model_validate_json(row.payload).model_copy(update={'source_id':'alias','url':HttpUrl('https://example.org/local?utm_source=alias')})
         _,is_new=upsert_job(session,alias,source)
         assert not is_new
         session.commit()
     app=AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py')).run(timeout=30)
     assert not app.exception and app.metric[0].value=='1'
     assert app.dataframe[0].value.iloc[0]['Source postings']==2
-    assert any('Grouped source postings' in caption.value for caption in app.caption)
+    assert any('Source aliases share an exact canonical' in caption.value for caption in app.caption)

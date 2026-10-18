@@ -3,8 +3,10 @@ import re
 
 
 def geography_only_requirement(text):
-    geographic = re.search(r'work authori[sz]|work permit|right to work|visa|citizenship|citizens?|residen|based in|located in|onsite|on-site|eu[- ]only|hiring (?:country|location)',text,re.I)
-    professional = re.search(r'\b(experience|skills?|years?|testing|test|qa|playwright|selenium|sql|python|java|c\+\+|degree|certification|english|french|german|romanian|fluent|proficien\w*)\b',text,re.I)
+    geographic = re.search(r'work authori[sz]|work permit|work permission|work (?:from|in|within) (?:the )?(?:eu|eea|european union)|right to work|visa|citizenship|citizens?|residen|based in|located in|onsite|on-site|eu[- ]only|hiring (?:country|location)',text,re.I)
+    professional_text = re.sub(r'\b\d+\+?\s*years?\s+(?:of\s+)?(?:residen\w*|citizenship)\b', '', text, flags=re.I)
+    professional_text = re.sub(r'\b(?:english|french|german|romanian)\s+(?:citizenship|citizens?|residen\w*)\b', '', professional_text, flags=re.I)
+    professional = re.search(r'\b(experience|skills?|years?|testing|test|qa|playwright|selenium|sql|python|java|c\+\+|degree|certification|english|french|german|romanian|fluent|proficien\w*)\b',professional_text,re.I)
     return bool(geographic and not professional)
 
 

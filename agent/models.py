@@ -69,4 +69,4 @@ class Match(BaseModel):
     geographic_priority: int = Field(default=5, ge=0)
     in_main_recommendations: bool = False
     exclusion_reasons: list[str] = Field(default_factory=list)
-    version: str = 'mvp-01.4'
+    version: str = 'mvp-01.5'

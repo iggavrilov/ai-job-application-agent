@@ -48,12 +48,15 @@ def test_duplicate_persistence(tmp_path,job):
         row,new=upsert_job(s,job,source)
         assert new
         first=row.first_discovered
-        for duplicate in [job,job.model_copy(update={'source_id':'2'}),job.model_copy(update={'source_id':'3','url':HttpUrl('https://elsewhere.org/2')})]:
+        for duplicate in [job,job.model_copy(update={'source_id':'2'})]:
             r,new=upsert_job(s,duplicate,source)
             assert not new and r.id==row.id and r.first_discovered==first
+        distinct=job.model_copy(update={'source_id':'3','url':HttpUrl('https://elsewhere.org/2')})
+        separate,new=upsert_job(s,distinct,source)
+        assert new and separate.id!=row.id
         s.commit()
     with db() as s:
-        assert len(list(s.scalars(select(JobRow))))==1
+        assert len(list(s.scalars(select(JobRow))))==2
 
 
 def test_canonical():

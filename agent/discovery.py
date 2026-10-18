@@ -4,7 +4,7 @@ import hashlib
 from collections import Counter
 import httpx
 from filelock import FileLock
-from sqlalchemy import select, or_
+from sqlalchemy import select
 from agent.settings import ROOT, profile, rules
 from agent.registry import load_boards
 from agent.models import now
@@ -25,7 +25,7 @@ def upsert_job(session, job, source):
         if alias:
             row = session.get(JobRow,alias.job_id)
     if row is None:
-        row = session.scalar(select(JobRow).where(or_(JobRow.canonical_url==canonical(job.url),JobRow.fingerprint==fingerprint(job))).order_by(JobRow.id))
+        row = session.scalar(select(JobRow).where(JobRow.canonical_url==canonical(job.url)).order_by(JobRow.id))
     is_new = row is None
     if row is None:
         row = JobRow(source_id=source.id,identity=identity,canonical_url=canonical(job.url),fingerprint=fingerprint(job),payload=job.model_dump_json())

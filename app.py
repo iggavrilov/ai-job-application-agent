@@ -54,7 +54,7 @@ with factory() as session:
             continue
         job, match = Job.model_validate_json(row.payload), Match.model_validate_json(latest.payload)
         observations = [Job.model_validate_json(observation.payload) for observation in session.scalars(select(JobObservation).where(JobObservation.job_id==row.id))]
-        if match.professional_score is None or match.version != 'mvp-01.4':
+        if match.professional_score is None or match.version != 'mvp-01.5':
             snapshot = session.get(CandidateProfile,latest.candidate_id) if latest.candidate_id else None
             if snapshot:
                 match = evaluate(job,Candidate.model_validate_json(snapshot.payload),search_config,False)
@@ -116,7 +116,7 @@ with factory() as session:
             st.text(plain(job.description))
             st.link_button('Open Original Job Posting',str(job.url))
             if len(selected['_observations']) > 1:
-                st.caption('Grouped source postings: fuzzy matching may combine distinct vacancies. Review every source URL; this is one grouped record, not proof of identical requirements.')
+                st.caption('Source aliases share an exact canonical application URL. Distinct application URLs are stored and assessed separately.')
                 for index, observation in enumerate(selected['_observations'],1):
                     st.link_button(f'Source posting {index}',str(observation.url))
             for col,status in zip(st.columns(3),['Interested','Not Interested','Reviewed']):
