@@ -1,0 +1,25 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+data/
+*.pdf
+*.db
+*.db-*
+candidate_profile.json
+*.log
+# All local environment variants; the template is safe to track.
+.env.*
+!.env.example
+venv/
+*.sqlite
+*.sqlite3
+*.sqlite*
+*.db*
+*.pem
+*.key
+credentials*.json
+secrets*.json
+candidate_profile*.json
+private/
+cv/

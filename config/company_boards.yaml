@@ -1,0 +1,3 @@
+# Active discovery registry: add only API-verified, employer-owned boards.
+# Pending entries are in company_boards.unverified.yaml and are disabled.
+boards: []

@@ -1,0 +1,11 @@
+streamlit>=1.40,<2
+SQLAlchemy>=2.0,<3
+httpx>=0.27,<1
+openai>=1.60,<3
+PyMuPDF>=1.24,<2
+pydantic>=2.9,<3
+PyYAML>=6,<7
+pytest>=8,<10
+python-dotenv>=1,<2
+filelock>=3.16,<4
+pandas>=2.2,<3

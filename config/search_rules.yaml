@@ -1,0 +1,6 @@
+include_titles: [qa engineer, qa automation engineer, quality assurance, qa analyst, software tester, functional qa, web qa, cms qa, api qa, integration qa, manual qa, aqa engineer]
+exclude_titles: [software developer, software engineer, devops, product manager, automation architect]
+weights: {technical: 35, experience: 20, geography: 20, salary: 15, additional: 10}
+minimum_salary: null
+remote_preferred: true
+request_interval_seconds: 1
