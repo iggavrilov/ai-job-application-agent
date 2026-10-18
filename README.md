@@ -2,7 +2,7 @@
 
 Local Python 3.12+ Streamlit app for discovering and reviewing QA vacancies. No application submission, LinkedIn automation, browser automation, or authenticated employer access.
 
-Current status: [takeover validation](TAKEOVER_VALIDATION.md) supersedes the historical reports below. The full suite passes on Windows Python 3.11 and 3.12 without a private profile. [Current source evidence](SOURCE_CHECK_2026-10-18.md) records one verified Grafana board and two disabled research entries. See [Windows setup](WINDOWS_SETUP.md) for private profile creation, installation and running the corrected application.
+Current status: [verified QA discovery report](QA_DISCOVERY_REPORT.md) supersedes earlier snapshots. The registry has 27 verified Greenhouse/Lever employer boards. Live ingestion fetched 2,453 postings and retained 10 QA/test vacancies; 9 require manual eligibility review. The full suite passes 114 tests on Windows Python 3.12 without private profile files. See [Windows setup](WINDOWS_SETUP.md) for installation and private profile handling. Discovery CLI JSON and the dashboard now include per-source rejection and persistence diagnostics.
 
 ## Windows setup (PowerShell)
 

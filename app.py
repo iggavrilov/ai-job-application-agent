@@ -4,11 +4,11 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 from filelock import Timeout
-from agent.db import database, JobRow, MatchRow, SearchRun
+from agent.db import database, JobRow, MatchRow, SearchRun, SearchDiagnostic
 from agent.models import Job, Match
 from agent.collectors import plain
 from agent.discovery import discover
-from agent.matching import region, ranking_key
+from agent.matching import region, ranking_key, relevant
 from agent.settings import rules
 from agent.registry import load_boards
 
@@ -25,6 +25,11 @@ if pending:
     st.warning(f'{pending} enabled employer boards await verification. Endpoint availability and Moldova hiring eligibility are separate checks.')
 for error in registry_errors:
     st.warning(error)
+try:
+    search_config = rules()
+except Exception as exc:
+    st.error(f'Cannot read search rules: {type(exc).__name__}. Check config/search_rules.yaml.')
+    st.stop()
 use_ai = st.sidebar.checkbox('Use OpenAI when configured',value=False,help='Optional: sends structured professional profile and job text to OpenAI. Rules work without an API key.')
 if st.button('Discover jobs now'):
     try:
@@ -48,10 +53,12 @@ with factory() as session:
         if latest is None:
             continue
         job, match = Job.model_validate_json(row.payload), Match.model_validate_json(latest.payload)
+        if not relevant(job,search_config):
+            continue  # Keep historical data while respecting current search preferences.
         records.append({'ID':row.id,'Job title':job.title,'Company':job.company,'Location':job.location,'Remote status':job.remote,
           'Match score':match.score,'Recommendation':match.recommendation,'Salary':job.salary or 'Not published',
           'Publication date':job.published,'Application link':str(job.url),'Source':job.platform,'Discovered':row.first_discovered[:10],
-          'Region':region(job.location),'Last checked':row.last_checked[:19],'Review status':row.status,'_job':job,'_match':match})
+          'Region':region(job.location + ' ' + job.title),'Last checked':row.last_checked[:19],'Review status':row.status,'_job':job,'_match':match})
     cols = st.columns(6)
     metrics = [('Total vacancies',len(records)),('New vacancies',sum(r['Review status']=='New' for r in records)),
       ('Strong matches',sum(r['Recommendation']=='Strong Match' for r in records)),('Good matches',sum(r['Recommendation']=='Good Match' for r in records)),
@@ -71,7 +78,7 @@ with factory() as session:
         after = st.sidebar.date_input('Discovered on or after',value=date(2020,1,1))
         filtered = [r for r in filtered if country.lower() in r['Location'].lower() and title.lower() in r['Job title'].lower() and r['Match score']>=minimum and r['Discovered']>=after.isoformat()]
         order = st.sidebar.selectbox('Rank by',['Match score','Geographic priority'])
-        remote_preferred = rules().get('remote_preferred', True)
+        remote_preferred = search_config.get('remote_preferred', True)
         filtered.sort(key=lambda r:ranking_key(r,order,remote_preferred))
         if remote_preferred:
             st.caption('Remote roles are prioritized within the selected ranking; geographic ranking keeps Moldova, Romania and EU/Europe first.')
@@ -100,3 +107,9 @@ with factory() as session:
         st.info('No stored relevant vacancies. Run discovery; live results will appear here.')
     with st.expander('Search history'):
         st.dataframe([{'Run':r.id,'Started':r.started,'Finished':r.finished,'Status':r.status,'Fetched':r.discovered,'New relevant':r.new,'Errors':r.errors} for r in runs])
+    with st.expander('Discovery diagnostics'):
+        diagnostic = session.scalar(select(SearchDiagnostic).order_by(SearchDiagnostic.id.desc()))
+        if diagnostic:
+            st.json(json.loads(diagnostic.payload))
+        else:
+            st.caption('Run discovery to record source, filtering, eligibility and persistence counts.')

@@ -19,13 +19,30 @@ def fingerprint(job):
     return hashlib.sha256('|'.join(re.sub(r'\W+',' ',v.lower()).strip() for v in [job.company,job.title,job.location]).encode()).hexdigest()
 
 
-def relevant(job, config):
-    title = job.title.lower()
-    included = any(k in title for k in config['include_titles'])
-    excluded = any(k in title for k in config['exclude_titles'])
+def filter_reason(job, config):
+    """A single auditable rejection reason; eligibility never removes a QA posting."""
+    title = re.sub(r'[^a-z0-9+#]+', ' ', job.title.casefold()).strip()
+    includes = [re.sub(r'[^a-z0-9+#]+', ' ', value.casefold()).strip() for value in config['include_titles']]
+    included = any(re.search(r'\b' + re.escape(k) + r'\b', title) for k in includes)
+    test_role = bool(re.search(r'\bsoftware (?:development )?engineer in test\b', title))
+    excluded = any(k.casefold() in title for k in config['exclude_titles']
+                   if not (test_role and k.casefold() == 'software engineer'))
+    if excluded:
+        return 'excluded_title'
+    if not included:
+        return 'no_qa_title_keyword'
+    # Generic quality/test engineers can be manufacturing or hardware inspection.
+    explicit_qa = bool(re.search(r'\b(qa|sdet|software|automation)\b|quality assurance', title))
+    software_context = bool(re.search(r'\b(software|web|api|playwright|selenium|javascript|regression|test automation|mobile application)\b', plain(job.description), re.I))
+    if not explicit_qa and not software_context:
+        return 'no_software_testing_evidence'
     # Explicitly advanced programming SDET roles are outside the supplied profile.
     unsupported = 'sdet' in title and bool(re.search(r'(advanced|expert).{0,30}(java\b|python|c\+\+)',plain(job.description).lower()))
-    return included and not excluded and not unsupported
+    return 'advanced_programming_sdet' if unsupported else None
+
+
+def relevant(job, config):
+    return filter_reason(job, config) is None
 
 
 def region(location):
@@ -52,7 +69,8 @@ def ranking_key(record, order, remote_preferred=True):
 
 def geography(job, candidate):
     text = plain(job.description).lower()
-    location = job.location.lower()
+    # Titles can state hiring scope even when ATS location contains only an HQ/city.
+    location = (job.location + ' ' + job.title).lower()
     combined = location + ' ' + text
     # The MVP only knows how to assess the supplied Moldova residence.
     if 'moldova' not in candidate.location.lower():
@@ -74,12 +92,16 @@ def geography(job, candidate):
     if job.remote == 'Remote' and ('moldova' in location or re.search(r'(hire|hiring|candidates|work|based|remote).{0,50}moldova',text)):
         return 'Eligible', 'Explicit Moldova remote location; no authorization restriction detected.'
     worldwide = bool(re.search(r'\b(worldwide|anywhere|global)\b', location) or re.search(r'(remote|work).{0,20}(worldwide|from anywhere)',text))
-    non_moldova_country = any(c in location for c in ('united states','canada','australia','united kingdom','germany','romania')) or bool(re.search(r'\b(us|usa|uk)\b',location))
-    if job.remote == 'Remote' and worldwide and not non_moldova_country:
+    eu_location = any(re.search(r'\b'+re.escape(country.lower())+r'\b', location) for country in EU)
+    non_moldova_country = eu_location or any(c in location for c in ('united states','canada','australia','united kingdom')) or bool(re.search(r'\b(us|usa|uk)\b',location))
+    generic_global_scope = bool(re.fullmatch(r'[\W_]*(?:(?:remote|worldwide|global|anywhere|international)[\W_]*)+', job.location.lower()))
+    if job.remote == 'Remote' and worldwide and generic_global_scope and not non_moldova_country:
         return 'Eligible', 'Explicit worldwide remote scope; no authorization restriction detected.'
-    if non_moldova_country and worldwide:
-        return 'Needs Review', 'Worldwide wording conflicts with a specific hiring country.'
+    if worldwide:
+        return 'Needs Review', 'Broad remote wording requires confirmation against the specific or unverified hiring location.'
     if any(c in location for c in ('united states','canada','australia','united kingdom')) or re.search(r'\b(us|usa|uk)\b',location):
+        if eu_location or re.search(r'\b(moldova|europe|eu|emea)\b', location):
+            return 'Needs Review', 'Multiple advertised hiring regions include a target region; verify the applicable location and authorization.'
         return 'Ineligible', 'Advertised hiring location excludes Moldova; no compatible location stated.'
     return 'Needs Review', 'Hiring country, relocation, remote terms or authorization is unverified; EU eligibility is not assumed.'
 

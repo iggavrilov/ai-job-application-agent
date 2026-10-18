@@ -61,4 +61,4 @@ class Match(BaseModel):
     explanation: str
     recommendation: Literal['Strong Match', 'Good Match', 'Needs Review', 'Not Recommended']
     method: str
-    version: str = 'mvp-01.2'
+    version: str = 'mvp-01.3'

@@ -42,17 +42,28 @@ def verify_boards(registry_path=None, include_disabled=False):
 
 def main():
     parser = argparse.ArgumentParser(description='Local QA job discovery; never submits applications')
-    parser.add_argument('command',choices=['discover','verify-boards','doctor','extract-cv'])
+    parser.add_argument('command',choices=['discover','verify-boards','verify-employer','doctor','extract-cv'])
     parser.add_argument('--no-ai',action='store_true')
     parser.add_argument('--pdf')
     parser.add_argument('--registry',help='Registry YAML to verify; discovery always uses the active registry')
     parser.add_argument('--include-disabled',action='store_true',help='Explicitly probe disabled research entries during verification only')
+    parser.add_argument('--company',help='Employer name for official careers-link verification')
+    parser.add_argument('--careers-url',help='Official HTTPS employer careers URL (not an aggregator)')
     args = parser.parse_args()
     if args.command == 'doctor':
         from agent.diagnostics import main as doctor
         raise SystemExit(doctor())
     if args.command == 'verify-boards':
         raise SystemExit(verify_boards(args.registry,args.include_disabled))
+    if args.command == 'verify-employer':
+        if not args.company or not args.careers_url or not args.careers_url.startswith('https://'):
+            parser.error('--company and an official HTTPS --careers-url are required')
+        import httpx
+        from agent.source_verification import verify_employer
+        with httpx.Client(timeout=30,follow_redirects=False,headers={'User-Agent':'QAJobAgent/0.1 (public API reader)'}) as client:
+            result = verify_employer(args.company,args.careers_url,client)
+        print(json.dumps(result,indent=2))
+        raise SystemExit(0 if result and all(evidence['status']=='verified' for _,evidence in result) else 1)
     if args.command == 'extract-cv':
         if not args.pdf:
             parser.error('--pdf is required')
