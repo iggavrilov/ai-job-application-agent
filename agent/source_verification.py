@@ -17,7 +17,7 @@ def board_links(content):
         parsed = urlsplit(url)
         host = parsed.hostname
         parts = parsed.path.strip('/').split('/')
-        if host in ('boards.greenhouse.io', 'job-boards.greenhouse.io'):
+        if host in ('boards.greenhouse.io', 'job-boards.greenhouse.io', 'job-boards.eu.greenhouse.io'):
             platform, board = 'greenhouse', parts[0]
             if board == 'embed':
                 board = parse_qs(parsed.query).get('for', [''])[0]
@@ -27,6 +27,10 @@ def board_links(content):
             platform, board = 'ashby', parts[0]
         elif host == 'boards-api.greenhouse.io' and len(parts) >= 4 and parts[:2] == ['v1', 'boards']:
             platform, board = 'greenhouse', parts[2]
+        elif host == 'my.greenhouse.io' and 'job_board' in parse_qs(parsed.query):
+            # Public employer job-alert links expose the exact board token.
+            # Extract it locally; never visit the login URL or create an alert.
+            platform, board = 'greenhouse', parse_qs(parsed.query)['job_board'][0]
         else:
             continue
         if re.fullmatch(r'[A-Za-z0-9_-]+', board):
@@ -84,7 +88,7 @@ def verify_employer(company, careers_url, client):
     source = urlsplit(careers_url)
     if source.scheme != 'https' or not source.hostname or source.username or source.password:
         raise ValueError('Supply a public HTTPS official employer careers URL')
-    if source.hostname in ('jobs.lever.co','jobs.ashbyhq.com','boards.greenhouse.io','job-boards.greenhouse.io','boards-api.greenhouse.io'):
+    if source.hostname in ('jobs.lever.co','jobs.ashbyhq.com','boards.greenhouse.io','job-boards.greenhouse.io','job-boards.eu.greenhouse.io','boards-api.greenhouse.io','my.greenhouse.io'):
         raise ValueError('An ATS URL alone is not official employer ownership evidence')
     final_url, content = employer_page(client, careers_url)
     observed = {link: final_url for link in board_links(content)}

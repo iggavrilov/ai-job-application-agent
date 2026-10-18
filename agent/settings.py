@@ -21,6 +21,8 @@ def rules():
         raise ValueError('weights must specify five nonnegative numeric criteria')
     if sum(v for k, v in weights.items() if k != 'salary') <= 0:
         raise ValueError('Non-salary weights must have positive total')
+    if sum(weights[key] for key in ('technical','experience','additional')) <= 0:
+        raise ValueError('Professional criteria must have a positive total weight')
     if config.get('minimum_salary') is not None:
         raise ValueError('Keep minimum_salary null: currency-aware salary preferences are not implemented')
     interval = config.get('request_interval_seconds', 1)

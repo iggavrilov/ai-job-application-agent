@@ -1,4 +1,4 @@
-# Official employer link plus policy-compliant API verification; see QA_DISCOVERY_REPORT.md.
+# Official employer evidence; see RELEVANCE_REVIEW.md for target-geography QA sources and results.
 boards:
 - company: Aircall
   platform: greenhouse
@@ -9,6 +9,16 @@ boards:
   verified_at: '2026-10-18T19:44:54.217021+00:00'
   notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
     78 postings at verification. Eligibility assessed per vacancy.
+- company: Bitdefender
+  platform: greenhouse
+  board: scbitdefendersrl
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.bitdefender.com/en-us/company/careers/jobs
+  verified_at: '2026-10-18T20:22:26.342379+00:00'
+  notes: Official employer page exposes the exact board identifier; API HTTP 200,
+    59 postings at verification. Romania/EU QA roles observed; Moldova access and
+    professional fit assessed separately.
 - company: Bungie
   platform: greenhouse
   board: bungie
@@ -216,6 +226,16 @@ boards:
   verified_at: '2026-10-18T19:44:59.871700+00:00'
   notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
     492 postings at verification. Eligibility assessed per vacancy.
+- company: Ubiquiti
+  platform: greenhouse
+  board: ubiquiti
+  enabled: true
+  verification_status: verified
+  evidence_url: https://careers.ui.com/
+  verified_at: '2026-10-18T20:20:30.456215+00:00'
+  notes: Official employer page exposes the exact board identifier; API HTTP 200,
+    173 postings at verification. Romania/EU QA roles observed; Moldova access and
+    professional fit assessed separately.
 - company: Unlimit
   platform: lever
   board: unlimit
@@ -234,6 +254,16 @@ boards:
   verified_at: '2026-10-18T19:43:14.260549+00:00'
   notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
     93 postings at verification. Eligibility assessed per vacancy.
+- company: Xebia CEE
+  platform: greenhouse
+  board: xebiacee
+  enabled: true
+  verification_status: verified
+  evidence_url: https://xebia.com/careers/
+  verified_at: '2026-10-18T20:20:31.027754+00:00'
+  notes: Official employer page exposes the exact board identifier; API HTTP 200,
+    70 postings at verification. Romania/EU QA roles observed; Moldova access and
+    professional fit assessed separately.
 - company: Xsolla
   platform: lever
   board: xsolla

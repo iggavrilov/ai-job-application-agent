@@ -88,3 +88,22 @@ def test_unknown_ats_robots_policy_never_calls_job_api():
         entry,evidence=verify_employer('Synthetic','https://employer.example/careers',client)[0]
     assert not entry['enabled'] and evidence['policy_http_status']==401
     assert not any('/v0/postings/' in url for url in requests)
+
+
+def test_official_job_alert_link_token_is_evidence_without_visiting_login():
+    requests=[]
+    def handler(request):
+        requests.append(str(request.url))
+        if request.url.path=='/robots.txt':return httpx.Response(404)
+        if request.url.host=='employer.example':
+            return httpx.Response(200,text='<a href="https://my.greenhouse.io/users/sign_in?job_board=exact-id&amp;source=job_alert_post">Create Alert</a>')
+        if request.url.host=='boards-api.greenhouse.io':return httpx.Response(200,json={'jobs':[]})
+        pytest.fail('A login or unrelated endpoint must never be opened')
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        entry,evidence=verify_employer('Synthetic','https://employer.example/jobs',client)[0]
+    assert entry['board']=='exact-id' and entry['enabled']
+    assert not any('my.greenhouse.io' in request for request in requests)
+
+
+def test_observed_eu_greenhouse_host_is_supported():
+    assert board_links('https://job-boards.eu.greenhouse.io/exact/jobs/123')==[('greenhouse','exact')]
