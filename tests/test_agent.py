@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import ValidationError, HttpUrl
 from sqlalchemy import select
 from agent.models import Candidate, Job, Assessment
-from agent.settings import profile, rules
+from agent.settings import rules
 from agent.collectors import normalize, collect
 from agent.matching import relevant, geography, evaluate, score_parts, canonical
 from agent.db import database, Company, Source, JobRow, MatchRow, SearchRun
@@ -18,8 +18,8 @@ def job():
       description='Playwright JavaScript API testing SQL Drupal Regression testing',url='https://example.org/jobs/1',platform='lever',source_id='1')
 
 
-def test_profile():
-    p=profile()
+def test_profile(candidate):
+    p=candidate
     assert bool(p.name.strip()) and p.work_authorization=='unknown' and not p.languages
     with pytest.raises(ValidationError):
         Candidate.model_validate(p.model_dump() | {'experience_years':-1})
@@ -48,7 +48,7 @@ def test_duplicate_persistence(tmp_path,job):
         row,new=upsert_job(s,job,source)
         assert new
         first=row.first_discovered
-        for duplicate in [job,job.model_copy(update={'source_id':'2'}),job.model_copy(update={'source_id':'3','url':'https://elsewhere.org/2'})]:
+        for duplicate in [job,job.model_copy(update={'source_id':'2'}),job.model_copy(update={'source_id':'3','url':HttpUrl('https://elsewhere.org/2')})]:
             r,new=upsert_job(s,duplicate,source)
             assert not new and r.id==row.id and r.first_discovered==first
         s.commit()
@@ -72,41 +72,41 @@ def test_canonical():
  ('Moldova','QA role','Onsite','Needs Review'),
  ('Cyprus','QA role','Remote','Needs Review'),
 ])
-def test_geography(job,location,description,remote,expected):
-    assert geography(job.model_copy(update={'location':location,'description':description,'remote':remote}),profile())[0]==expected
+def test_geography(job,location,description,remote,expected,candidate):
+    assert geography(job.model_copy(update={'location':location,'description':description,'remote':remote}),candidate)[0]==expected
 
 
-def test_unknown_work_authorization(job):
+def test_unknown_work_authorization(job,candidate):
     j=job.model_copy(update={'description':job.description+'; Work authorization required'})
-    m=evaluate(j,profile(),rules(),False)
+    m=evaluate(j,candidate,rules(),False)
     assert m.eligibility=='Needs Review' and m.recommendation=='Needs Review'
 
 
-def test_salary_and_scoring(job):
+def test_salary_and_scoring(job,candidate):
     a=Assessment(technical=1,experience=1,additional=1,matching_skills=[],missing_skills=[],mandatory_requirements=[],uncertain_mandatory=False,explanation='test')
     assert score_parts(a,'Eligible',rules())==100
-    m=evaluate(job,profile(),rules(),False)
-    assert m.score==evaluate(job.model_copy(update={'salary':'1 EUR/year'}),profile(),rules(),False).score
+    m=evaluate(job,candidate,rules(),False)
+    assert m.score==evaluate(job.model_copy(update={'salary':'1 EUR/year'}),candidate,rules(),False).score
     assert m.recommendation=='Strong Match'
 
 
-def test_geo_cannot_be_overridden(job):
-    m=evaluate(job.model_copy(update={'location':'United States'}),profile(),rules(),False)
+def test_geo_cannot_be_overridden(job,candidate):
+    m=evaluate(job.model_copy(update={'location':'United States'}),candidate,rules(),False)
     assert m.recommendation=='Not Recommended'
 
 
-def test_uncertain_mandatory(job):
-    m=evaluate(job.model_copy(update={'description':job.description+'; Fluent English required'}),profile(),rules(),False)
+def test_uncertain_mandatory(job,candidate):
+    m=evaluate(job.model_copy(update={'description':job.description+'; Fluent English required'}),candidate,rules(),False)
     assert m.recommendation=='Needs Review'
 
 
-def test_ai_validation_and_fallback(job,monkeypatch):
+def test_ai_validation_and_fallback(job,monkeypatch,candidate):
     with pytest.raises(ValidationError):
         Assessment.model_validate_json('{"technical":101}')
     monkeypatch.setenv('OPENAI_API_KEY','test-not-real')
     import openai
     monkeypatch.setattr(openai,'OpenAI',lambda **kw: (_ for _ in ()).throw(RuntimeError('offline')))
-    assert 'fallback' in evaluate(job,profile(),rules()).method
+    assert 'fallback' in evaluate(job,candidate,rules()).method
 
 
 def test_collector_failure():
@@ -149,7 +149,7 @@ def test_discovery_continues_and_history(tmp_path,job,monkeypatch):
 
 def test_overlapping_run():
     from filelock import FileLock, Timeout
-    from agent.settings import ROOT
+    from agent.discovery import ROOT
     from agent.discovery import discover
     with FileLock(str(ROOT/'data/search.lock')):
         with pytest.raises(Timeout):

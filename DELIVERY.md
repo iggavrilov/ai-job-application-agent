@@ -1,3 +1,5 @@
+> Historical report. Current takeover status supersedes this document: [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md) and [SOURCE_CHECK_2026-10-18.md](SOURCE_CHECK_2026-10-18.md). Private candidate data is never part of the repository.
+
 # Private project delivery and Git preparation
 
 The existing project was updated in place. Source is prepared for review and a local Git commit, but is **not a fully validated release**. Full dependency installation, pytest, Windows startup and live discovery remain acceptance gates. No repository was created, no commit made, and nothing was pushed.

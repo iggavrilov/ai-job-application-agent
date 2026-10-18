@@ -9,20 +9,22 @@ from unittest.mock import patch
 import httpx
 from pydantic import ValidationError
 from agent.models import Candidate, Job, Assessment
-from agent.settings import profile, rules
+from agent.settings import rules
+from tests.support import candidate_fixture
 from agent.collectors import collect, ENDPOINTS
 from agent.matching import evaluate, geography, relevant, canonical, fingerprint, score_parts
 
 
 class OfflineValidation(unittest.TestCase):
     def setUp(self):
+        self.candidate = candidate_fixture()
         self.job = Job(title='Senior QA Automation Engineer', company='Mock employer',
           location='Remote - Moldova', remote='Remote',
           description='Playwright JavaScript API testing SQL Drupal Regression testing',
           url='https://example.org/jobs/1', platform='lever', source_id='1')
 
     def test_profile_validation(self):
-        candidate = profile()
+        candidate = self.candidate
         self.assertTrue(candidate.name.strip())
         self.assertEqual(candidate.work_authorization, 'unknown')
         self.assertEqual(candidate.languages, [])
@@ -59,27 +61,27 @@ class OfflineValidation(unittest.TestCase):
     def test_geographic_eligibility(self):
         for location, expected in [('Remote - Moldova','Eligible'),('Worldwide','Eligible'),('Europe','Needs Review'),('Romania','Needs Review'),('Cyprus','Needs Review'),('United States','Ineligible')]:
             with self.subTest(location=location):
-                self.assertEqual(geography(self.job.model_copy(update={'location':location}),profile())[0],expected)
+                self.assertEqual(geography(self.job.model_copy(update={'location':location}),self.candidate)[0],expected)
 
     def test_unknown_work_authorization(self):
-        match = evaluate(self.job.model_copy(update={'description':'Work authorization required'}), profile(), rules(),False)
+        match = evaluate(self.job.model_copy(update={'description':'Work authorization required'}), self.candidate, rules(),False)
         self.assertEqual(match.eligibility,'Needs Review')
         self.assertEqual(match.recommendation,'Needs Review')
 
     def test_scoring_and_missing_salary(self):
         assessment = Assessment(technical=1,experience=1,additional=1,matching_skills=[],missing_skills=[],mandatory_requirements=[],uncertain_mandatory=False,explanation='test')
         self.assertEqual(score_parts(assessment,'Eligible',rules()),100)
-        match = evaluate(self.job,profile(),rules(),False)
-        low_salary = evaluate(self.job.model_copy(update={'salary':'1 EUR/year'}),profile(),rules(),False)
+        match = evaluate(self.job,self.candidate,rules(),False)
+        low_salary = evaluate(self.job.model_copy(update={'salary':'1 EUR/year'}),self.candidate,rules(),False)
         self.assertEqual(match.score,low_salary.score)
         self.assertEqual(match.recommendation,'Strong Match')
 
     def test_eligibility_gate(self):
-        match = evaluate(self.job.model_copy(update={'location':'United States'}),profile(),rules(),False)
+        match = evaluate(self.job.model_copy(update={'location':'United States'}),self.candidate,rules(),False)
         self.assertEqual(match.recommendation,'Not Recommended')
 
     def test_uncertain_mandatory_requirements(self):
-        match = evaluate(self.job.model_copy(update={'description':self.job.description+'; Fluent English required'}),profile(),rules(),False)
+        match = evaluate(self.job.model_copy(update={'description':self.job.description+'; Fluent English required'}),self.candidate,rules(),False)
         self.assertEqual(match.recommendation,'Needs Review')
 
     def test_duplicate_keys(self):
@@ -107,11 +109,11 @@ class OfflineValidation(unittest.TestCase):
 
     def test_no_api_key_rules(self):
         with patch.dict(os.environ,{'OPENAI_API_KEY':''}):
-            self.assertEqual(evaluate(self.job,profile(),rules()).method,'rules')
+            self.assertEqual(evaluate(self.job,self.candidate,rules()).method,'rules')
 
     def test_missing_openai_fallback(self):
         with patch.dict(os.environ,{'OPENAI_API_KEY':'mock-key'}), patch.dict('sys.modules',{'openai':None}):
-            self.assertIn('AI fallback: ModuleNotFoundError',evaluate(self.job,profile(),rules()).method)
+            self.assertIn('AI fallback: ModuleNotFoundError',evaluate(self.job,self.candidate,rules()).method)
 
 
 if __name__ == '__main__':

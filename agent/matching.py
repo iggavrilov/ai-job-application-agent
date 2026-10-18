@@ -42,6 +42,14 @@ def region(location):
     return 'Other / unknown'
 
 
+def ranking_key(record, order, remote_preferred=True):
+    priorities = {'Moldova':0,'Romania':1,'European Union / Europe':2,'International remote / unspecified':3,'Other / unknown':4}
+    geographic = priorities[record['Region']]
+    remote = int(remote_preferred and record['Remote status'] != 'Remote')
+    score = -record['Match score']
+    return (geographic, remote, score) if order == 'Geographic priority' else (remote, score, geographic)
+
+
 def geography(job, candidate):
     text = plain(job.description).lower()
     location = job.location.lower()
