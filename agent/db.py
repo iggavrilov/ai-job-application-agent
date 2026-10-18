@@ -83,6 +83,14 @@ class ApplicationRecord(Base):
     status = Column(String)
 
 
+class SearchDiagnostic(Base):
+    """Additive table: historical databases need no destructive schema migration."""
+    __tablename__ = 'search_diagnostics'
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey('search_runs.id'), unique=True, nullable=False)
+    payload = Column(Text, nullable=False)
+
+
 def database(url=None):
     (ROOT / 'data').mkdir(exist_ok=True)
     from sqlalchemy.engine import make_url

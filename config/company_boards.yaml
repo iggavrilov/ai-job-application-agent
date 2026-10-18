@@ -1,11 +1,245 @@
-# Active discovery registry: add only API-verified, employer-owned boards.
-# Pending entries are in company_boards.unverified.yaml and are disabled.
+# Official employer link plus policy-compliant API verification; see QA_DISCOVERY_REPORT.md.
 boards:
-  - company: Grafana Labs
-    platform: greenhouse
-    board: grafanalabs
-    enabled: true
-    verification_status: verified
-    verified_at: '2026-10-18T19:25:46.753035+00:00'
-    evidence_url: https://grafana.com/careers/
-    notes: 'Official careers page links to job-boards.greenhouse.io/grafanalabs. API returned 114 postings, zero matching configured QA titles. Eligibility remains per vacancy.'
+- company: Aircall
+  platform: greenhouse
+  board: aircallioinc
+  enabled: true
+  verification_status: verified
+  evidence_url: https://aircall.io/careers/
+  verified_at: '2026-10-18T19:44:54.217021+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    78 postings at verification. Eligibility assessed per vacancy.
+- company: Bungie
+  platform: greenhouse
+  board: bungie
+  enabled: true
+  verification_status: verified
+  evidence_url: https://careers.bungie.com/
+  verified_at: '2026-10-18T19:49:56.725749+00:00'
+  notes: Exact board linked on official careers page; API HTTP 200, 4 postings at
+    verification. Eligibility assessed per vacancy.
+- company: Canonical
+  platform: greenhouse
+  board: canonical
+  enabled: true
+  verification_status: verified
+  evidence_url: https://canonical.com/careers
+  verified_at: '2026-10-18T19:42:52.788949+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    309 postings at verification. Eligibility assessed per vacancy.
+- company: Collabora
+  platform: lever
+  board: collabora
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.collabora.com/careers.html
+  verified_at: '2026-10-18T19:43:04.311137+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    2 postings at verification. Eligibility assessed per vacancy.
+- company: Customer.io
+  platform: greenhouse
+  board: customerio
+  enabled: true
+  verification_status: verified
+  evidence_url: https://customer.io/careers
+  verified_at: '2026-10-18T19:46:36.710680+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    27 postings at verification. Eligibility assessed per vacancy.
+- company: Dataiku
+  platform: greenhouse
+  board: dataiku
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.dataiku.com/careers/
+  verified_at: '2026-10-18T19:44:51.506371+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    13 postings at verification. Eligibility assessed per vacancy.
+- company: Exadel
+  platform: greenhouse
+  board: exadelinc
+  enabled: true
+  verification_status: verified
+  evidence_url: https://exadel.com/careers/
+  verified_at: '2026-10-18T19:52:17.648603+00:00'
+  notes: Exact board linked on official careers page; API HTTP 200, 38 postings at
+    verification. Eligibility assessed per vacancy.
+- company: GitLab
+  platform: greenhouse
+  board: gitlab
+  enabled: true
+  verification_status: verified
+  evidence_url: https://about.gitlab.com/jobs/
+  verified_at: '2026-10-18T19:42:56.102559+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    232 postings at verification. Eligibility assessed per vacancy.
+- company: GoCardless
+  platform: greenhouse
+  board: gocardless
+  enabled: true
+  verification_status: verified
+  evidence_url: https://gocardless.com/about/careers/
+  verified_at: '2026-10-18T19:43:18.176894+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    32 postings at verification. Eligibility assessed per vacancy.
+- company: Grafana Labs
+  platform: greenhouse
+  board: grafanalabs
+  enabled: true
+  verification_status: verified
+  evidence_url: https://grafana.com/careers/
+  verified_at: '2026-10-18T19:42:53.293772+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    114 postings at verification. Eligibility assessed per vacancy.
+- company: Harness
+  platform: greenhouse
+  board: harnessinc
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.harness.io/company/careers
+  verified_at: '2026-10-18T19:44:51.455098+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    67 postings at verification. Eligibility assessed per vacancy.
+- company: Intercom
+  platform: greenhouse
+  board: intercom
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.intercom.com/careers
+  verified_at: '2026-10-18T19:46:37.474147+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    106 postings at verification. Eligibility assessed per vacancy.
+- company: LaunchDarkly
+  platform: greenhouse
+  board: launchdarkly
+  enabled: true
+  verification_status: verified
+  evidence_url: https://launchdarkly.com/careers/
+  verified_at: '2026-10-18T19:43:21.050002+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    52 postings at verification. Eligibility assessed per vacancy.
+- company: Lokalise
+  platform: greenhouse
+  board: lokalise
+  enabled: true
+  verification_status: verified
+  evidence_url: https://lokalise.com/careers/
+  verified_at: '2026-10-18T19:45:31.371665+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    2 postings at verification. Eligibility assessed per vacancy.
+- company: Mattermost
+  platform: greenhouse
+  board: mattermost
+  enabled: true
+  verification_status: verified
+  evidence_url: https://mattermost.com/careers/
+  verified_at: '2026-10-18T19:45:29.589247+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    11 postings at verification. Eligibility assessed per vacancy.
+- company: Mixpanel
+  platform: greenhouse
+  board: mixpanel
+  enabled: true
+  verification_status: verified
+  evidence_url: https://mixpanel.com/careers/
+  verified_at: '2026-10-18T19:46:38.892329+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    47 postings at verification. Eligibility assessed per vacancy.
+- company: Monzo
+  platform: greenhouse
+  board: monzo
+  enabled: true
+  verification_status: verified
+  evidence_url: https://monzo.com/careers
+  verified_at: '2026-10-18T19:46:41.397323+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    71 postings at verification. Eligibility assessed per vacancy.
+- company: Neo4j
+  platform: greenhouse
+  board: neo4j
+  enabled: true
+  verification_status: verified
+  evidence_url: https://neo4j.com/careers/
+  verified_at: '2026-10-18T19:45:55.547065+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    65 postings at verification. Eligibility assessed per vacancy.
+- company: Netlify
+  platform: greenhouse
+  board: netlify
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.netlify.com/careers/
+  verified_at: '2026-10-18T19:43:13.622989+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    5 postings at verification. Eligibility assessed per vacancy.
+- company: PadSplit
+  platform: lever
+  board: padsplit
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.padsplit.com/careers
+  verified_at: '2026-10-18T19:49:47.799220+00:00'
+  notes: Exact board linked on official careers page; API HTTP 200, 9 postings at
+    verification. Eligibility assessed per vacancy.
+- company: Palantir
+  platform: lever
+  board: palantir
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.palantir.com/careers/
+  verified_at: '2026-10-18T19:46:27.014778+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    310 postings at verification. Eligibility assessed per vacancy.
+- company: Sauce Labs
+  platform: greenhouse
+  board: saucelabs
+  enabled: true
+  verification_status: verified
+  evidence_url: https://saucelabs.com/careers
+  verified_at: '2026-10-18T19:44:41.917692+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    9 postings at verification. Eligibility assessed per vacancy.
+- company: Sourcegraph
+  platform: greenhouse
+  board: sourcegraph91
+  enabled: true
+  verification_status: verified
+  evidence_url: https://sourcegraph.com/careers
+  verified_at: '2026-10-18T19:45:59.237049+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    9 postings at verification. Eligibility assessed per vacancy.
+- company: Speechify
+  platform: greenhouse
+  board: speechify
+  enabled: true
+  verification_status: verified
+  evidence_url: https://speechify.com/careers/
+  verified_at: '2026-10-18T19:44:59.871700+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    492 postings at verification. Eligibility assessed per vacancy.
+- company: Unlimit
+  platform: lever
+  board: unlimit
+  enabled: true
+  verification_status: verified
+  evidence_url: https://www.unlimit.com/careers/
+  verified_at: '2026-10-18T19:46:28.592569+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    64 postings at verification. Eligibility assessed per vacancy.
+- company: Vercel
+  platform: greenhouse
+  board: vercel
+  enabled: true
+  verification_status: verified
+  evidence_url: https://vercel.com/careers
+  verified_at: '2026-10-18T19:43:14.260549+00:00'
+  notes: Official careers page/linked subpage exposes this exact board; API HTTP 200,
+    93 postings at verification. Eligibility assessed per vacancy.
+- company: Xsolla
+  platform: lever
+  board: xsolla
+  enabled: true
+  verification_status: verified
+  evidence_url: https://xsolla.com/careers
+  verified_at: '2026-10-18T19:49:53.522555+00:00'
+  notes: Exact board linked on official careers page; API HTTP 200, 192 postings at
+    verification. Eligibility assessed per vacancy.

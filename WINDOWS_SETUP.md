@@ -1,6 +1,6 @@
 # Windows setup and daily discovery
 
-Current validation is in [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md). The full suite passed on Windows Python 3.11.0 and 3.12.14; Python 3.12+ remains the documented target. Full tests use synthetic inputs and require no private profile. Real discovery still requires your private profile. No command submits applications.
+Current discovery results and source evidence are in [QA_DISCOVERY_REPORT.md](QA_DISCOVERY_REPORT.md); PR #1 validation is preserved in [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md). The full suite passed on Windows Python 3.11.0 and 3.12.14; Python 3.12+ remains the documented target. Full tests use synthetic inputs and require no private profile. Real discovery still requires your private profile. No command submits applications.
 
 ## 1. Prerequisites and private files
 
@@ -53,7 +53,7 @@ Edit local `.env`, never `.env.example`, for secrets:
 
 `config/search_rules.yaml`: title include/exclude keywords, score weights, request interval. Keep `minimum_salary: null`; missing/low salary never reduces compatibility. Salary is preserved when supplied. Technical/experience/geography/additional weights receive the redistributed salary weight.
 
-`config/company_boards.yaml`: employer, source platform (`greenhouse`, `lever`, `ashby`), board identifier, enabled flag and verification notes. Grafana is enabled after API and official careers-link verification. PostHog and Wealthsimple remain disabled in the research queue. See SOURCE_CHECK_2026-10-18.md for exact observations and limits. The registry is intentionally small; add employers only after finding the actual board link on their official careers site. A successful API response alone does not establish employer ownership or Moldova eligibility.
+`config/company_boards.yaml`: employer, source platform (`greenhouse`, `lever`, `ashby`), board identifier, enabled flag and verification notes. The active registry contains 27 verified employers (22 Greenhouse, 5 Lever). PostHog and Wealthsimple remain disabled in the Ashby research queue because API-origin robots policy is unavailable. See QA_DISCOVERY_REPORT.md for exact source links, timestamps, counts and vacancy limitations; add employers only after finding the actual board link on their official careers site. A successful API response alone does not establish employer ownership or Moldova eligibility.
 
 For Moldova/Romania/EU coverage, verify actual employer careers pages first, then confirm the country terms in each vacancy. Never guess a board slug from a company name. All EU countries, including Cyprus, share the EU region. Remote Europe or EU-only does not establish eligibility for a Moldova resident.
 
@@ -71,7 +71,7 @@ The report prints results and is saved privately to `data/board_verification.jso
 .\.venv\Scripts\python.exe -m agent.cli discover --no-ai
 ```
 
-Inspect the result and search errors. `fetched` counts successfully normalized board postings; `new_relevant` counts newly stored relevant jobs after deduplication. Malformed entries produce warnings and a Partial run. Sources failing HTTP/robots/normalization or database writes are isolated. No failed board writes are counted as successful. Source records update only when fetched, so a job's last-checked timestamp does not mean the vacancy is still open.
+Inspect the result, search errors and `diagnostics`. `relevant` counts retained QA/test postings; `new_relevant=0` on repeat searches can mean existing jobs were refreshed. Per-board counts explain normalization, title rejection, eligibility, duplicates and committed work. The dashboard Discovery diagnostics expander shows the latest persisted report. Inspect the result and search errors. `fetched` counts successfully normalized board postings; `new_relevant` counts newly stored relevant jobs after deduplication. Malformed entries produce warnings and a Partial run. Sources failing HTTP/robots/normalization or database writes are isolated. No failed board writes are counted as successful. Source records update only when fetched, so a job's last-checked timestamp does not mean the vacancy is still open.
 
 To opt into OpenAI, set the API key and remove `--no-ai`. Professional profile facts and job descriptions are sent to OpenAI; candidate email/phone are excluded, and the full CV is never sent. No candidate data goes to employer public board APIs. OpenAI errors fall back to rules.
 

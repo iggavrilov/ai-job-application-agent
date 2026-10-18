@@ -55,6 +55,10 @@ def test_database_error_does_not_poison_next_board(tmp_path,job,monkeypatch):
     result=d.discover(False)
     assert result['status']=='Partial' and calls==['one','two']
     assert result['new_relevant']==1
+    totals=result['diagnostics']['totals']
+    assert totals['failed_boards']==1 and totals['committed_boards']==1
+    assert totals['normalized']==2 and totals['rolled_back_normalized']==1
+    assert totals['relevant']==1 and totals['new']==1
     with db() as session:
         assert len(list(session.scalars(select(JobRow))))==1
         match=session.scalar(select(MatchRow))

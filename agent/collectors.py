@@ -4,12 +4,18 @@ import json
 import re
 import time
 import logging
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urljoin
 from urllib.robotparser import RobotFileParser
 import httpx
 from agent.models import Job
 
 log = logging.getLogger(__name__)
+
+
+class RobotsPolicyError(RuntimeError):
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.policy_http_status = status
 
 
 class CollectedJobs(list):
@@ -43,9 +49,13 @@ def remote_status(location, explicit=None):
     value = location.lower()
     if 'hybrid' in value:
         return 'Hybrid'
-    if 'remote' in value:
+    is_remote = 'remote' in value or bool(re.search(r'\b(home[- ]based|work from home)\b', value))
+    is_onsite = 'onsite' in value or 'on-site' in value or bool(re.search(r'\boffice[- ]based\b', value))
+    if is_remote and is_onsite:
+        return 'Unknown'  # Alternative placements are not proof of a hybrid contract.
+    if is_remote:
         return 'Remote'
-    if 'onsite' in value or 'on-site' in value:
+    if is_onsite:
         return 'Onsite'
     return 'Unknown'
 
@@ -55,8 +65,13 @@ def normalize(platform, company, item):
         raise ValueError('Unsupported source platform')
     if platform == 'greenhouse':
         location = item.get('location', {}).get('name') or 'unknown'
+        remote = remote_status(location)
+        if remote == 'Unknown' and not re.search(r'office[- ]based|home[- ]based',location,re.I):
+            mode = re.search(r'\b(?:work(?:place)? type|working arrangement|work mode)\s*:\s*(remote|hybrid|onsite|on-site)\b', plain(item.get('content')), re.I)
+            if mode:
+                remote = remote_status(location, mode[1])
         return Job(title=item['title'], company=company, location=location,
-                   remote=remote_status(location), description=item.get('content') or '',
+                   remote=remote, description=item.get('content') or '',
                    url=item['absolute_url'], platform=platform, source_id=str(item['id']),
                    salary=json.dumps(item['pay_input_ranges']) if item.get('pay_input_ranges') else None,
                    published=item.get('first_published'))
@@ -82,21 +97,37 @@ def normalize(platform, company, item):
                published=item.get('publishedAt'), url=item['jobUrl'], platform=platform, source_id=str(item.get('id') or item['jobUrl']))
 
 
-def collect(board, client, interval=1):
-    platform = board['platform']
-    url = ENDPOINTS[platform].format(board=board['board'])
+def check_robots(client, url, interval=1):
+    """Establish permission before any API or employer-page request."""
     origin = '{0.scheme}://{0.netloc}'.format(urlsplit(url))
-    robots = client.get(origin + '/robots.txt')
+    robots = client.get(origin + '/robots.txt', follow_redirects=False)
     if robots.status_code == 200:
         parser = RobotFileParser()
         parser.parse(robots.text.splitlines())
         if not parser.can_fetch('QAJobAgent', url):
-            raise RuntimeError('robots.txt disallows endpoint')
+            raise RobotsPolicyError('robots.txt disallows endpoint', robots.status_code)
         interval = max(interval, parser.crawl_delay('QAJobAgent') or 0)
     elif robots.status_code not in (404, 410):
-        raise RuntimeError(f'Cannot establish robots policy: {robots.status_code}')
+        raise RobotsPolicyError(f'Cannot establish robots policy: {robots.status_code}', robots.status_code)
     time.sleep(interval)
-    response = client.get(url)
+    return robots.status_code
+
+
+def collect(board, client, interval=1):
+    platform = board['platform']
+    url = ENDPOINTS[platform].format(board=board['board'])
+    check_robots(client, url, interval)
+    for _ in range(6):
+        response = client.get(url, follow_redirects=False)
+        if not response.is_redirect:
+            break
+        target = urljoin(url, response.headers['location'])
+        if urlsplit(target).scheme != 'https':
+            raise RuntimeError('Public API redirect must use HTTPS')
+        check_robots(client, target, interval)
+        url = target
+    else:
+        raise RuntimeError('Too many public API redirects')
     response.raise_for_status()  # Includes 429: do not retry aggressively.
     data = response.json()
     items = data if platform == 'lever' else data['jobs']
