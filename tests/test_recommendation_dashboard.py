@@ -39,7 +39,7 @@ def test_main_list_excludes_geography_with_auditable_reason(tmp_path,monkeypatch
     app=AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py')).run(timeout=30)
     assert not app.exception and app.metric[0].value=='1'
     assert app.dataframe[0].value['Location'].tolist()==['Moldova']
-    assert next(widget for widget in app.selectbox if widget.label=='Rank by').value=='Geographic priority'
+    assert next(widget for widget in app.selectbox if widget.label=='Rank by').value=='Professional score'
     next(widget for widget in app.selectbox if widget.label=='Vacancy view').select('Excluded / audit').run()
     assert not app.exception
     frame=app.dataframe[0].value
