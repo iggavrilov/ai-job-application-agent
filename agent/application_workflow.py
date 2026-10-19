@@ -348,8 +348,24 @@ def _select_react_option(page, selector: str, value: str) -> str:
         raise ApplicationPreparationError('A supported Greenhouse choice field is missing or ambiguous: ' + selector)
     field.locator('xpath=../../..').click()
     field.press_sequentially(value.split(' (', 1)[0])
+    try:
+        page.get_by_role('option').wait_for(state='visible', timeout=5000)
+    except Exception:
+        # Continue to the unique-match check below; a missing suggestion remains
+        # a safe failure and is never replaced with guessed text.
+        pass
     option_texts = page.get_by_role('option').all_inner_texts()
     matches = [text for text in option_texts if _option_matches(value, text)]
+    if len(matches) > 1:
+        # Prefer a uniquely identifying alternate label, such as the English
+        # alias in "București (Bucharest)", when the local city name also
+        # occurs in smaller places returned by Greenhouse.
+        for alias in _option_aliases(value):
+            alias_folded = _fold_option_text(alias)
+            narrowed = [text for text in option_texts if alias_folded in _fold_option_text(text)]
+            if len(narrowed) == 1:
+                matches = narrowed
+                break
     if len(matches) != 1:
         raise ApplicationPreparationError('A supported Greenhouse choice could not be selected uniquely (' + selector + ').')
     option = page.get_by_role('option', name=matches[0], exact=True)
@@ -360,9 +376,16 @@ def _select_react_option(page, selector: str, value: str) -> str:
     if selected.count() != 1:
         raise ApplicationPreparationError('A selected Greenhouse choice could not be read back (' + selector + ').')
     actual = ' '.join(selected.inner_text().split())
-    if not _option_matches(value, actual):
+    selected_matches = _option_matches(value, actual)
+    if (not selected_matches and selector == '#country'
+            and re.fullmatch(r'\+\d{1,4}', actual)
+            and _fold_option_text(actual) in _fold_option_text(matches[0])):
+        # Greenhouse's phone-country control displays the dial code after selecting
+        # an option such as "Moldova +373", not the country name itself.
+        selected_matches = True
+    if not selected_matches:
         raise ApplicationPreparationError('A Greenhouse choice did not retain its confirmed value (' + selector + ').')
-    return actual
+    return matches[0] if selector == '#country' else actual
 
 
 def _select_country(page, country: str) -> str:

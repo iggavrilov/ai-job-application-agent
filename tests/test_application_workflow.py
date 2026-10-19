@@ -81,6 +81,10 @@ class FakeLocator:
         active = self.store.get('_active')
         return self.store.get('_options', {}).get(active, [])
 
+    def wait_for(self, *, state='visible', timeout=None):
+        if state == 'visible' and not self.all_inner_texts():
+            raise TimeoutError('No synthetic option is visible.')
+
     def press(self, value):
         return None
 
@@ -96,7 +100,10 @@ class FakeLocator:
 
     def inner_text(self):
         if self.key.endswith('::selected'):
-            return self.store.get('_selected', {}).get(self.key.removesuffix('::selected'), '')
+            selected = self.store.get('_selected', {}).get(self.key.removesuffix('::selected'), '')
+            if self.key == '#country::selected' and '+' in selected:
+                return '+' + selected.rsplit('+', 1)[-1]
+            return selected
         return 'Location (City)*' if self.key in {'label', 'label[for="candidate-location"]'} else ''
 
 
@@ -306,6 +313,27 @@ def test_confirmed_dropdown_answers_are_selected_and_read_back(candidate):
     assert page.values['_selected']['#question_9299067101'] == 'Yes'
     assert page.values['_selected']['#question_9299069101'] == 'Acknowledge'
     assert page.values['#question_9299068101'] == '5,200 TEST/month'
+
+
+def test_country_dropdown_verifies_greenhouse_dial_code_readback():
+    from agent.application_workflow import _select_react_option
+    page = FakePage()
+    page.values['_options'] = {'#country': ['Moldova +373']}
+    selected = _select_react_option(page, '#country', 'Moldova')
+    assert selected == 'Moldova +373'
+    assert page.values['_selected']['#country'] == 'Moldova +373'
+
+
+def test_city_dropdown_uses_unique_confirmed_city_alias():
+    from agent.application_workflow import _select_react_option
+    page = FakePage()
+    selector = '[id="candidate-location"]'
+    page.values['_options'] = {
+        selector: ['Bucure\u0219ti, Bucharest, Romania', 'Cotul Bucuresti, Iasi, Romania']
+    }
+    selected = _select_react_option(page, selector, 'Bucure\u0219ti (Bucharest)')
+    assert selected == 'Bucure\u0219ti, Bucharest, Romania'
+    assert page.values['_selected'][selector] == selected
 
 
 def test_application_preferences_load_only_from_private_path(tmp_path):
