@@ -12,6 +12,7 @@ import re
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
@@ -32,6 +33,8 @@ from agent.application_workflow import (
     map_verified_fields,
 )
 from agent.settings import ROOT, profile
+from agent.db import JobRow
+from agent.matching import canonical
 
 
 APPLICATION_STATES = (
@@ -56,6 +59,16 @@ class SubmissionUncertainError(RuntimeError):
 
 class ReviewInvalidatedError(ApplicationSubmissionError):
     """Raised when the live form no longer matches the reviewed snapshot."""
+
+
+@dataclass(frozen=True)
+class VerifiedSubmission:
+    """Proof returned only after the official employer confirmation is verified."""
+    job_id: int
+    application_url: str
+    review_fingerprint: str
+    confirmation_url: str
+    confirmed_at: str
 
 
 def _canonical_hash(value: object) -> str:
@@ -263,17 +276,17 @@ def _save_state(state_path: Path, state: dict, status: str, **updates) -> dict:
 
 def approve_and_submit(job_id: int, reviewed_fingerprint: str, *,
                        candidate_confirmed: bool, root: Path = ROOT,
-                       submitter: Callable | None = None) -> dict:
+                       submitter: Callable | None = None, factory=None) -> dict:
     """Consume one fresh dashboard confirmation, serialized per application."""
     with _exclusive_approval_attempt(job_id, root):
         return _approve_and_submit_locked(
             job_id, reviewed_fingerprint, candidate_confirmed=candidate_confirmed,
-            root=root, submitter=submitter)
+            root=root, submitter=submitter, factory=factory)
 
 
 def _approve_and_submit_locked(job_id: int, reviewed_fingerprint: str, *,
                                candidate_confirmed: bool, root: Path,
-                               submitter: Callable | None) -> dict:
+                               submitter: Callable | None, factory=None) -> dict:
     """Consume one fresh dashboard confirmation for the exact prepared snapshot."""
     if candidate_confirmed is not True:
         raise ApplicationSubmissionError('Explicit confirmation for this exact application is required.')
@@ -320,8 +333,33 @@ def _approve_and_submit_locked(job_id: int, reviewed_fingerprint: str, *,
     except Exception as exc:
         return _save_state(state_path, state, 'Submission Failed',
                            state_note=f'Submission did not complete before a request was dispatched ({type(exc).__name__}).')
-    if outcome == 'Submitted':
-        return _save_state(state_path, state, 'Submitted', submitted_at=datetime.now(timezone.utc).isoformat())
+    if (isinstance(outcome, VerifiedSubmission)
+            and outcome.job_id == job_id
+            and outcome.application_url == str(job.url)
+            and outcome.review_fingerprint == current_fingerprint
+            and _has_reliable_submission_confirmation(outcome.confirmation_url,
+                                                       'Thank you for applying', False)):
+        evidence = {
+            'job_id': job_id,
+            'application_url': str(job.url),
+            'review_fingerprint': current_fingerprint,
+            'confirmation_url': outcome.confirmation_url,
+            'confirmed_at': outcome.confirmed_at,
+            'confirmation_verified': True,
+        }
+        submitted = _save_state(state_path, state, 'Submitted', submitted_at=outcome.confirmed_at,
+                                submission_evidence=evidence,
+                                review_status_sync={'status': 'Pending', 'desired_status': 'Applied'})
+        if factory is not None:
+            try:
+                reconcile_confirmed_submission(job_id, root, factory)
+                submitted = json.loads(state_path.read_text(encoding='utf-8'))
+            except Exception as exc:
+                # The employer result remains Submitted; only the local sync is
+                # pending. Never translate a confirmed external result to Failed.
+                submitted['review_status_sync']['last_error'] = type(exc).__name__
+                _write_json(state_path, submitted)
+        return submitted
     return _save_state(state_path, state, 'Submission Uncertain',
                        state_note='The employer did not provide a clear submission confirmation. Check the employer site; do not retry automatically.')
 
@@ -372,8 +410,87 @@ def _close_browser_safely(browser) -> None:
         pass
 
 
+def reconcile_confirmed_submission(job_id: int, root: Path = ROOT, factory=None) -> str:
+    """Idempotently sync verified submission evidence to SQLite review status.
+
+    The private Submitted record is written before SQLite. If either process stops
+    between writes, this method can safely finish the review-status transition;
+    it never invokes a browser or retries an employer submission.
+    """
+    _, state_path = _application_files(job_id, root)
+    try:
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return 'Unavailable'
+    evidence = state.get('submission_evidence')
+    sync = state.get('review_status_sync')
+    if (state.get('status') != 'Submitted' or not isinstance(evidence, dict)
+            or evidence.get('confirmation_verified') is not True
+            or evidence.get('job_id') != job_id
+            or evidence.get('review_fingerprint') != state.get('review_fingerprint')
+            or evidence.get('application_url') != state.get('application_url')
+            or not _has_reliable_submission_confirmation(
+                str(evidence.get('confirmation_url', '')), 'Thank you for applying', False)
+            or not isinstance(sync, dict)
+            or sync.get('desired_status') != 'Applied'
+            or sync.get('status') not in {'Pending', 'Synced'}):
+        return 'Not eligible'
+    if sync.get('status') == 'Synced':
+        return 'Synced'
+    if factory is None:
+        from agent.db import database
+        factory = database()
+    with factory.begin() as session:
+        row = session.get(JobRow, job_id)
+        if row is None:
+            result = 'Conflict'
+        elif canonical(str(evidence.get('application_url', ''))) != row.canonical_url:
+            result = 'Conflict'
+        elif row.status == 'Applied':
+            result = 'Synced'
+        elif row.status == 'Shortlisted':
+            # A conditional write protects a concurrent manual decision.
+            updated = session.query(JobRow).filter(
+                JobRow.id == job_id, JobRow.status == 'Shortlisted').update(
+                    {JobRow.status: 'Applied'}, synchronize_session=False)
+            result = 'Synced' if updated == 1 else 'Conflict'
+        else:
+            # Preserve manual changes such as Rejected or Reviewed.
+            result = 'Conflict'
+    state['review_status_sync'] = {
+        **sync,
+        'status': result,
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    state['state_note'] = (None if result == 'Synced' else
+                           'Employer submission is confirmed, but the existing vacancy review choice was preserved; reconcile manually.')
+    _write_json(state_path, state)
+    return result
+
+
+def reconcile_pending_submissions(root: Path = ROOT, factory=None) -> dict[str, int]:
+    """Recover pending SQLite review-status updates without browser activity."""
+    counts = {'Synced': 0, 'Conflict': 0, 'Unavailable': 0, 'Not eligible': 0}
+    runs = Path(root) / 'private' / 'application_runs'
+    if not runs.is_dir():
+        return counts
+    for state_path in runs.glob('job-*/application_state.json'):
+        try:
+            state = json.loads(state_path.read_text(encoding='utf-8'))
+            job_id = state.get('job_id')
+            if not isinstance(job_id, int):
+                continue
+            status = reconcile_confirmed_submission(job_id, root, factory)
+            counts[status] = counts.get(status, 0) + 1
+        except Exception:
+            # Keep the dashboard available and the durable sync marker pending;
+            # the next rerun can retry this local-only database reconciliation.
+            counts['Unavailable'] += 1
+    return counts
+
+
 def _submit_live_application(job_id: int, job, candidate, preferences, answers, cv_path: Path,
-                             mapped: dict, reviewed_fingerprint: str, root: Path) -> str:
+                             mapped: dict, reviewed_fingerprint: str, root: Path) -> VerifiedSubmission:
     from playwright.sync_api import sync_playwright
 
     from agent.application_submission import build_review_snapshot, review_fingerprint
@@ -451,7 +568,13 @@ def _submit_live_application(job_id: int, job, candidate, preferences, answers, 
                 _, preview_path, _ = _private_paths(root, job_id)
                 page.screenshot(path=str(preview_path.with_name('submission_confirmation.png')), full_page=True)
                 _close_browser_safely(browser)
-                return 'Submitted'
+                return VerifiedSubmission(
+                    job_id=job_id,
+                    application_url=str(job.url),
+                    review_fingerprint=reviewed_fingerprint,
+                    confirmation_url=page.url,
+                    confirmed_at=datetime.now(timezone.utc).isoformat(),
+                )
             raise SubmissionUncertainError('The employer page did not show a clear confirmation after submission; check the employer site and do not retry automatically.')
         except (ApplicationSubmissionError, SubmissionUncertainError):
             _close_browser_safely(browser)

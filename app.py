@@ -18,6 +18,7 @@ from agent.application_submission import (
     ApplicationSubmissionError,
     approve_and_submit,
     load_application_review,
+    reconcile_pending_submissions,
 )
 
 st.set_page_config(page_title='QA Job Agent',layout='wide')
@@ -53,6 +54,11 @@ try:
 except Exception as exc:
     st.error(f'Cannot open SQLite database: {type(exc).__name__}. Check DATABASE_URL and folder permissions.')
     st.stop()
+sync_results = reconcile_pending_submissions(ROOT, factory)
+if sync_results.get('Conflict', 0):
+    st.warning(f"{sync_results['Conflict']} confirmed submission(s) need manual review-status reconciliation; existing manual choices were preserved.")
+if sync_results.get('Unavailable', 0):
+    st.warning(f"{sync_results['Unavailable']} confirmed submission status update(s) remain pending because local storage was unavailable.")
 with factory() as session:
     runs = list(session.scalars(select(SearchRun).order_by(SearchRun.id.desc())))
     all_records = []
@@ -78,8 +84,9 @@ with factory() as session:
           'Publication date':job.published,'Application link':str(job.url),'Source':job.platform,'Discovered':row.first_discovered[:10],
           'Region':region(job.location + ' ' + job.title),'Last checked':row.last_checked[:19],'Review status':row.status,'_job':job,'_match':match,'_observations':observations})
     records = [record for record in all_records if record['_match'].in_main_recommendations]
-    cols = st.columns(6)
+    cols = st.columns(7)
     metrics = [('Total vacancies',len(records)),('New vacancies',sum(r['Review status']=='New' for r in records)),
+      ('Applied',sum(r['Review status']=='Applied' for r in all_records)),
       ('Strong professional fit',sum(r['Professional fit']=='Strong Match' for r in records)),('Good professional fit',sum(r['Professional fit']=='Good Match' for r in records)),
       ('Geography needs review',sum(r['Geographic eligibility']=='Needs Review' for r in records)),('Last successful search',next((r.finished[:19] for r in runs if r.status=='Success'),'Never'))]
     for col,(label,value) in zip(cols,metrics):
@@ -243,7 +250,7 @@ with factory() as session:
                                                 final_state = approve_and_submit(
                                                     selected['ID'], review_hash,
                                                     candidate_confirmed=explicitly_confirmed,
-                                                    root=ROOT)
+                                                    root=ROOT, factory=factory)
                                                 st.info(f"Application workflow state: {final_state['status']}")
                                             except (ApplicationSubmissionError, ApplicationPreparationError, OSError) as exc:
                                                 st.error(str(exc))
@@ -255,13 +262,35 @@ with factory() as session:
                                 elif workflow_status == 'Submission Failed':
                                     st.warning('Submission stopped before dispatch. Reprepare and review the exact application before another approval.')
                                 elif workflow_status == 'Submitted':
-                                    st.success('The employer showed a submission confirmation. This application state does not change the vacancy review status.')
+                                    sync_status = application_state.get('review_status_sync', {}).get('status', 'Pending')
+                                    if sync_status == 'Synced':
+                                        st.success('The employer submission is confirmed and the vacancy review status is Applied.')
+                                    elif sync_status == 'Conflict':
+                                        st.warning('The employer submission is confirmed. A different manual vacancy review choice was preserved; reconcile it manually.')
+                                    else:
+                                        st.info('The employer submission is confirmed. The SQLite review status update is pending safe recovery; no submission retry will occur.')
                                 elif workflow_status == 'Approved':
                                     st.warning('Approval was recorded, but no completed submission is recorded. Reprepare for a fresh review and approval.')
                                 else:
                                     st.caption('Prepare the application to reach a reviewable state. Application state is separate from the vacancy review status.')
                             except (OSError, json.JSONDecodeError, ApplicationSubmissionError, ApplicationPreparationError):
                                 st.warning('An application preparation session exists but its private preview cannot be read.')
+                    elif selected['Review status'] == 'Applied':
+                        _, _, state_path = _private_paths(ROOT, selected['ID'])
+                        try:
+                            applied_state = json.loads(state_path.read_text(encoding='utf-8'))
+                        except (OSError, json.JSONDecodeError):
+                            applied_state = {}
+                        if applied_state.get('status') == 'Submitted':
+                            st.markdown('#### Application workflow')
+                            st.write('**Application workflow status:** Submitted')
+                            sync_status = applied_state.get('review_status_sync', {}).get('status', 'Pending')
+                            if sync_status == 'Synced':
+                                st.success('Employer confirmation is verified; vacancy review status is Applied.')
+                            elif sync_status == 'Conflict':
+                                st.warning('Employer confirmation is verified; the previous manual review choice was preserved for reconciliation.')
+                            else:
+                                st.info('Employer confirmation is verified; SQLite status synchronization is pending recovery.')
                     if len(selected['_observations']) > 1:
                         st.markdown('#### Additional source postings')
                         for index, observation in enumerate(selected['_observations'],1):

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import HttpUrl
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from streamlit.testing.v1 import AppTest
 
 from agent.application_submission import (
@@ -12,16 +14,37 @@ from agent.application_submission import (
     ApplicationSubmissionError,
     ReviewInvalidatedError,
     SubmissionUncertainError,
+    VerifiedSubmission,
     _has_reliable_submission_confirmation,
     approve_and_submit,
     build_review_snapshot,
     load_application_review,
     review_fingerprint,
+    reconcile_confirmed_submission,
+    reconcile_pending_submissions,
 )
 from agent.application_workflow import FieldResult, _private_paths
 
 
 SYNTHETIC_URL = 'https://job-boards.eu.greenhouse.io/synthetic/jobs/123'
+
+
+def _verified_submission(job_id, fingerprint, url=SYNTHETIC_URL):
+    return VerifiedSubmission(job_id, url, fingerprint,
+                              'https://job-boards.eu.greenhouse.io/synthetic/confirmation',
+                              '2026-10-19T12:00:00+00:00')
+
+
+def _sync_factory(tmp_path, status='Shortlisted'):
+    from agent.db import Base, JobRow
+    engine = create_engine('sqlite:///' + str(tmp_path / 'status-sync.db'))
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    with factory.begin() as session:
+        session.add(JobRow(id=7, identity='greenhouse:synthetic:123',
+                           canonical_url=SYNTHETIC_URL, fingerprint='synthetic',
+                           payload='{}', status=status))
+    return factory
 
 
 def _snapshot(job_id=7, url=SYNTHETIC_URL):
@@ -214,7 +237,7 @@ def test_approval_is_bound_to_vacancy_url_and_single_attempt(tmp_path, monkeypat
     def fake_submitter(job_id, submitted_job, candidate, preferences, answers, cv_path,
                        mapped, approved_fingerprint, root):
         calls.append((job_id, str(submitted_job.url), approved_fingerprint))
-        return 'Submitted'
+        return _verified_submission(7, approved_fingerprint)
 
     state = approve_and_submit(7, fingerprint, candidate_confirmed=True,
                                root=tmp_path, submitter=fake_submitter)
@@ -230,6 +253,123 @@ def test_approval_is_bound_to_vacancy_url_and_single_attempt(tmp_path, monkeypat
     assert len(calls) == 1
     assert job.company == 'Synthetic Employer'
     assert json.loads(state_path.read_text(encoding='utf-8'))['status'] == 'Submitted'
+    assert state['review_status_sync']['status'] == 'Pending'
+
+
+def test_confirmed_submission_updates_review_status_to_applied(tmp_path, monkeypatch):
+    from agent.db import JobRow
+    state_path, fingerprint = _write_ready_application(tmp_path)
+    _patch_sources(monkeypatch, tmp_path)
+    factory = _sync_factory(tmp_path)
+    state = approve_and_submit(
+        7, fingerprint, candidate_confirmed=True, root=tmp_path, factory=factory,
+        submitter=lambda *args: _verified_submission(7, fingerprint))
+    assert state['status'] == 'Submitted'
+    assert state['review_status_sync']['status'] == 'Synced'
+    with factory() as session:
+        assert session.get(JobRow, 7).status == 'Applied'
+    assert json.loads(state_path.read_text(encoding='utf-8'))['status'] == 'Submitted'
+    with pytest.raises(ApplicationSubmissionError, match='fully prepared'):
+        approve_and_submit(7, fingerprint, candidate_confirmed=True, root=tmp_path,
+                           factory=factory,
+                           submitter=lambda *args: pytest.fail('confirmed submissions cannot retry'))
+
+
+def test_pending_review_status_sync_recovers_after_interrupted_database_update(tmp_path):
+    from agent.db import JobRow
+    state_path, fingerprint = _write_ready_application(tmp_path, status='Submitted')
+    state = json.loads(state_path.read_text(encoding='utf-8'))
+    state.update({
+        'application_url': SYNTHETIC_URL, 'review_fingerprint': fingerprint,
+        'submission_evidence': {
+            'job_id': 7, 'application_url': SYNTHETIC_URL,
+            'review_fingerprint': fingerprint,
+            'confirmation_url': 'https://job-boards.eu.greenhouse.io/synthetic/confirmation',
+            'confirmed_at': '2026-10-19T12:00:00+00:00', 'confirmation_verified': True,
+        },
+        'review_status_sync': {'status': 'Pending', 'desired_status': 'Applied'},
+    })
+    state_path.write_text(json.dumps(state), encoding='utf-8')
+
+    class InterruptedFactory:
+        def begin(self):
+            raise __import__('sqlite3').OperationalError('synthetic interrupted update')
+
+    assert reconcile_pending_submissions(tmp_path, InterruptedFactory())['Unavailable'] == 1
+    assert json.loads(state_path.read_text(encoding='utf-8'))['review_status_sync']['status'] == 'Pending'
+    factory = _sync_factory(tmp_path)
+    assert reconcile_confirmed_submission(7, tmp_path, factory) == 'Synced'
+    with factory() as session:
+        assert session.get(JobRow, 7).status == 'Applied'
+    assert json.loads(state_path.read_text(encoding='utf-8'))['review_status_sync']['status'] == 'Synced'
+
+
+def test_confirmed_submission_preserves_conflicting_manual_review_status(tmp_path):
+    from agent.db import JobRow
+    state_path, fingerprint = _write_ready_application(tmp_path, status='Submitted')
+    state = json.loads(state_path.read_text(encoding='utf-8'))
+    state.update({
+        'application_url': SYNTHETIC_URL, 'review_fingerprint': fingerprint,
+        'submission_evidence': {
+            'job_id': 7, 'application_url': SYNTHETIC_URL,
+            'review_fingerprint': fingerprint,
+            'confirmation_url': 'https://job-boards.eu.greenhouse.io/synthetic/confirmation',
+            'confirmed_at': '2026-10-19T12:00:00+00:00', 'confirmation_verified': True,
+        },
+        'review_status_sync': {'status': 'Pending', 'desired_status': 'Applied'},
+    })
+    state_path.write_text(json.dumps(state), encoding='utf-8')
+    factory = _sync_factory(tmp_path, status='Rejected')
+    assert reconcile_confirmed_submission(7, tmp_path, factory) == 'Conflict'
+    with factory() as session:
+        assert session.get(JobRow, 7).status == 'Rejected'
+    assert json.loads(state_path.read_text(encoding='utf-8'))['review_status_sync']['status'] == 'Conflict'
+
+
+def test_unverified_submitted_label_never_updates_review_status(tmp_path):
+    from agent.db import JobRow
+    state_path, _ = _write_ready_application(tmp_path, status='Submitted')
+    factory = _sync_factory(tmp_path)
+    assert reconcile_confirmed_submission(7, tmp_path, factory) == 'Not eligible'
+    with factory() as session:
+        assert session.get(JobRow, 7).status == 'Shortlisted'
+    assert json.loads(state_path.read_text(encoding='utf-8'))['status'] == 'Submitted'
+
+
+@pytest.mark.parametrize(
+    ('failure', 'expected_state'),
+    [(ValueError('synthetic pre-dispatch failure'), 'Submission Failed'),
+     (SubmissionUncertainError('synthetic ambiguous result'), 'Submission Uncertain')],
+)
+def test_failed_or_uncertain_submission_preserves_review_status(
+        tmp_path, monkeypatch, failure, expected_state):
+    from agent.db import JobRow
+    state_path, fingerprint = _write_ready_application(tmp_path)
+    _patch_sources(monkeypatch, tmp_path)
+    factory = _sync_factory(tmp_path)
+
+    def fail(*args):
+        raise failure
+
+    state = approve_and_submit(7, fingerprint, candidate_confirmed=True,
+                               root=tmp_path, factory=factory, submitter=fail)
+    assert state['status'] == expected_state
+    with factory() as session:
+        assert session.get(JobRow, 7).status == 'Shortlisted'
+    assert json.loads(state_path.read_text(encoding='utf-8'))['status'] == expected_state
+
+
+def test_unverified_submitted_string_is_uncertain_and_never_marks_applied(tmp_path, monkeypatch):
+    from agent.db import JobRow
+    _, fingerprint = _write_ready_application(tmp_path)
+    _patch_sources(monkeypatch, tmp_path)
+    factory = _sync_factory(tmp_path)
+    state = approve_and_submit(7, fingerprint, candidate_confirmed=True,
+                               root=tmp_path, factory=factory,
+                               submitter=lambda *args: 'Submitted')
+    assert state['status'] == 'Submission Uncertain'
+    with factory() as session:
+        assert session.get(JobRow, 7).status == 'Shortlisted'
 
 
 def test_concurrent_approval_attempts_cannot_submit_twice(tmp_path, monkeypatch):
@@ -244,7 +384,7 @@ def test_concurrent_approval_attempts_cannot_submit_twice(tmp_path, monkeypatch)
         calls.append(args)
         submitter_entered.set()
         assert release_submitter.wait(timeout=5)
-        return 'Submitted'
+        return _verified_submission(7, args[7])
 
     first = threading.Thread(target=lambda: first_result.append(approve_and_submit(
         7, fingerprint, candidate_confirmed=True, root=tmp_path, submitter=submitter)))
@@ -527,8 +667,10 @@ def test_synthetic_greenhouse_delayed_response_is_uncertain(tmp_path, monkeypatc
 def test_synthetic_greenhouse_reliable_confirmation_returns_submitted(tmp_path, monkeypatch):
     page = _SyntheticGreenhousePage(confirmation_text='Thank you for applying',
                                     form_visible=False)
-    run, page, browser, _ = _run_synthetic_live_submit(monkeypatch, tmp_path, page)
-    assert run() == 'Submitted'
+    run, page, browser, fingerprint = _run_synthetic_live_submit(monkeypatch, tmp_path, page)
+    outcome = run()
+    assert isinstance(outcome, VerifiedSubmission)
+    assert outcome.job_id == 7 and outcome.review_fingerprint == review_fingerprint(_snapshot())
     assert page.clicks == 1
     assert browser.closed
     assert len(page.screenshots) == 1
@@ -648,3 +790,13 @@ def test_dashboard_shows_exact_snapshot_and_requires_current_confirmation(
     with factory() as session:
         status = session.get(JobRow, 4).status
     assert status == 'Shortlisted'
+    with factory.begin() as session:
+        session.get(JobRow, 4).status = 'Applied'
+    state_path.write_text(json.dumps({
+        'job_id': 4, 'status': 'Submitted',
+        'review_status_sync': {'status': 'Synced', 'desired_status': 'Applied'},
+    }), encoding='utf-8')
+    app.run()
+    assert not app.exception
+    assert any('Application workflow status' in element.value for element in app.markdown)
+    assert any(element.label == 'Applied' and str(element.value) == '1' for element in app.metric)
