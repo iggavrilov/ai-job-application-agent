@@ -35,8 +35,13 @@ def test_dashboard_load_and_review(tmp_path, monkeypatch, candidate, populated):
     app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
     assert not app.exception
     if populated:
-        assert app.subheader[0].value == 'QA Engineer'
         assert app.metric[0].value == '1'
+        table = app.dataframe[0]
+        app.session_state[table.key] = {'selection': {'rows': [0], 'columns': [], 'cells': []}}
+        app.run()
+        assert app.session_state['selected_vacancy_id'] == int(app.dataframe[0].value.iloc[0]['ID'])
+        assert app.subheader[0].value == 'QA Engineer'
+        assert any(link.label == 'Open job posting' for link in app.link_button)
         next(widget for widget in app.selectbox if widget.label == 'Update review status').select('Reviewed').run()
         next(button for button in app.button if button.label == 'Save review status').click().run()
         assert not app.exception
