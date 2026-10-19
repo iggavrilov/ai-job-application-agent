@@ -1,5 +1,6 @@
 import json
 import hashlib
+from pathlib import Path
 from datetime import date
 import pandas as pd
 import streamlit as st
@@ -10,12 +11,13 @@ from agent.models import Job, Match, Candidate
 from agent.collectors import plain
 from agent.discovery import discover
 from agent.matching import region, ranking_key, evaluate
-from agent.settings import rules
+from agent.settings import rules, ROOT
 from agent.registry import load_boards
+from agent.application_workflow import ApplicationPreparationError, _launch_from_dashboard, _private_paths
 
 st.set_page_config(page_title='QA Job Agent',layout='wide')
 st.title('QA Job Agent · MVP-01')
-st.caption('Local discovery and review. Eligibility requires evidence; application submission is unavailable.')
+st.caption('Local discovery and review. Supervised form preparation is available; final submission stays blocked.')
 try:
     boards, registry_errors = load_boards()
 except Exception as exc:
@@ -156,6 +158,43 @@ with factory() as session:
                     st.write(job.requirements or match.mandatory_requirements or 'No separate requirements were published.')
                     with st.expander('Full job description'):
                         st.text(plain(job.description) or 'No description was published.')
+
+                    if selected['Review status'] == 'Shortlisted':
+                        if match.eligibility == 'Ineligible':
+                            st.info('Application preparation is disabled because this vacancy is explicitly marked Ineligible.')
+                        elif selected['ID'] != 4 or job.company.casefold() != 'bitdefender':
+                            st.info('Supervised preparation is currently enabled for Bitdefender vacancy ID 4 only.')
+                        else:
+                            if match.eligibility == 'Needs Review':
+                                st.warning('Geographic eligibility is Needs Review. Preparation is provisional; do not proceed until the employer confirms location and work-authorization requirements.')
+                            if st.button('Prepare Application', key=f"prepare-application-{selected['ID']}"):
+                                try:
+                                    _launch_from_dashboard(selected['ID'])
+                                    st.success('Visible browser launched. Preparation stops before submission; review decisions are unchanged.')
+                                except (ApplicationPreparationError, OSError) as exc:
+                                    st.error(str(exc))
+                        _, preview_path, state_path = _private_paths(ROOT, selected['ID'])
+                        if state_path.is_file():
+                            try:
+                                application_state = json.loads(state_path.read_text(encoding='utf-8'))
+                                st.markdown('#### Supervised application')
+                                st.write(f"**Form filling status:** {application_state.get('status', 'Unknown')}")
+                                completed_fields = application_state.get('completed_fields', [])
+                                candidate_fields = application_state.get('candidate_input_fields', [])
+                                st.write('**Fields completed:** ' + (', '.join(completed_fields) if completed_fields else 'Preparation not yet complete'))
+                                st.write('**Questions requiring candidate input:**')
+                                for item in candidate_fields:
+                                    st.write(f"- {item.get('label', 'Unlabeled question')}: {item.get('note', 'Review required')}")
+                                if preview_path.is_file():
+                                    preview = json.loads(preview_path.read_text(encoding='utf-8'))
+                                    with st.expander('Open application preview'):
+                                        st.json(preview)
+                                        screenshot = preview.get('screenshot_path')
+                                        if screenshot and Path(screenshot).is_file():
+                                            st.image(screenshot, caption='Private application preview')
+                                st.caption('Awaiting candidate approval. No application was submitted and this vacancy remains Shortlisted.')
+                            except (OSError, json.JSONDecodeError):
+                                st.warning('An application preparation session exists but its private preview cannot be read.')
                     if len(selected['_observations']) > 1:
                         st.markdown('#### Additional source postings')
                         for index, observation in enumerate(selected['_observations'],1):

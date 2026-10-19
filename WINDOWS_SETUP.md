@@ -85,6 +85,8 @@ Open http://127.0.0.1:8501 on that PC. Keep the terminal open. Stop with Ctrl+C.
 
 Use “Discover jobs now” to run a search. OpenAI is off in the dashboard by default; opt in with its checkbox. Filter by region/location, remote status, title, score, recommendation, source and discovery date. Rank by professional score or geographic priority. Select a job, set its status to New, Reviewed, Shortlisted, Rejected or Applied, then save. The status is stored in SQLite and repeated discovery does not overwrite it. Legacy Interested/Not Interested labels remain available until changed. Original posting links open the employer site; no submission occurs. Unknown eligibility and uncertain mandatory requirements remain Needs Review regardless of score.
 
+For a Shortlisted Greenhouse vacancy, **Prepare Application** opens the official form in a visible Microsoft Edge window, fills only supported verified profile fields and attaches the private tailored PDF. The local dashboard shows completed fields, candidate questions, and a private preview. Salary expectations, work-authorization declarations, and recruitment consent remain for candidate input. The final submit control is disabled and form submission is blocked. Close the browser when finished reviewing; the vacancy remains Shortlisted. Lever is not supported yet. Do not use this feature on LinkedIn.
+
 ## 6. Schedule daily searches
 
 First run a manual CLI search successfully. In Windows Task Scheduler, choose Create Task:
