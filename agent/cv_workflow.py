@@ -78,16 +78,44 @@ def _rank(items: list[str], description: str) -> list[str]:
         -len(_tokens(pair[1]) & words), pair[0]))]
 
 
-def _grouped_skills(candidate: Candidate, description: str = '') -> dict[str, list[str]]:
+_GROUP_TERMS = {
+    'Quality assurance': ('qa', 'quality assurance', 'manual testing', 'regression testing'),
+    'Automation': ('automation', 'playwright', 'selenium', 'bdd'),
+    'API and data': ('api', 'rest', 'sql', 'backend'),
+    'CMS platforms': ('cms', 'drupal', 'contentful', 'contentstack'),
+    'Performance and visual testing': ('performance testing', 'load testing', 'visual regression', 'k6'),
+    'Tools': ('figma', 'storybook', 'chromatic', 'devtools'),
+}
+
+
+def _grouped_skills(candidate: Candidate, description: str = '', target_title: str = '') -> dict[str, list[str]]:
     groups = {name: [skill for skill in skills if skill in candidate.skills]
               for name, skills in _SKILL_GROUPS.items()}
     groups = {name: skills for name, skills in groups.items() if skills}
     grouped = [skill for skills in groups.values() for skill in skills]
     if Counter(grouped) != Counter(candidate.skills):
         raise CvValidationError('Every profile skill must appear exactly once in the CV skill groups')
-    if description:
-        return {name: _rank(skills, description) for name, skills in groups.items()}
-    return groups
+    if not description:
+        return groups
+    normalized = _normal(description)
+    normalized_title = _normal(target_title)
+
+    def matches(phrase: str, text: str) -> bool:
+        return bool(re.search(r'(?<![a-z0-9])' + re.escape(phrase) + r'(?![a-z0-9])', text))
+
+    def relevance(group: str) -> int:
+        aliases = _GROUP_TERMS[group]
+        score = sum(matches(term, normalized) for term in aliases)
+        # Specific title wording should outweigh incidental repetition in a long posting.
+        if group == 'Automation' and matches('automation', normalized_title):
+            score += 100
+        if group == 'Quality assurance' and (matches('qa', normalized_title)
+                                               or matches('quality assurance', normalized_title)):
+            score += 20
+        return score
+
+    ordered = sorted(groups, key=lambda group: -relevance(group))
+    return {name: _rank(groups[name], description) for name in ordered}
 
 
 def render_cv(candidate: Candidate, *, target_title: str = '', target_employer: str = '',
@@ -119,7 +147,7 @@ def render_cv(candidate: Candidate, *, target_title: str = '', target_employer: 
         lines.extend(f'- {bullet}' for bullet in bullets)
         lines.append('')
     lines += ['## Technical skills', '']
-    for group, skills in _grouped_skills(candidate, description).items():
+    for group, skills in _grouped_skills(candidate, description, target_title).items():
         lines.append(f'- **{group}:** ' + '; '.join(skills))
     lines += ['', '## Education', '']
     lines.extend(f'- {item}' for item in candidate.education)
@@ -252,7 +280,8 @@ def tailor_cv(master_text: str, candidate: Candidate, *, target_title: str,
               target_employer: str, description: str) -> str:
     validate_cv_document(master_text, candidate)
     tailored = render_cv(candidate, target_title=target_title,
-                         target_employer=target_employer, description=description)
+                         target_employer=target_employer,
+                         description=description)
     validate_cv_document(tailored, candidate)
     return tailored
 

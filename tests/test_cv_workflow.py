@@ -4,7 +4,7 @@ import pytest
 
 from agent.cv_workflow import (
     CvValidationError, render_cv, tailor_cv, validate_cv_document,
-    validate_private_git_policy,
+    validate_private_git_policy, _section,
 )
 from agent.models import Candidate, CandidateExperience
 
@@ -43,7 +43,26 @@ def test_tailored_cv_reorders_verified_facts_without_copying_job_requirements(ca
     validate_cv_document(tailored, candidate)
     assert "Target position" in tailored and "Bitdefender" in tailored
     assert "Python" not in tailored and "Selenium" not in tailored and "100% coverage" not in tailored
-    assert tailored.index("Playwright") < tailored.index("Manual QA")
+    assert not __import__("re").search(r"\bJava\b", tailored, __import__("re").I)
+
+
+def test_role_focus_reorders_skill_categories_without_changing_facts(candidate):
+    master = render_cv(candidate)
+    xebia = tailor_cv(
+        master, candidate, target_title="Senior QA Automation Engineer", target_employer="Xebia CEE",
+        description="Playwright API Java automation framework with manual testing, regression testing and QA test cases",
+    )
+    bitdefender = tailor_cv(
+        master, candidate, target_title="QA Engineer", target_employer="Bitdefender",
+        description="Manual regression testing, exploratory testing and test cases",
+    )
+    def first_skill_group(document):
+        lines = [line for line in _section(document, "Technical skills").splitlines() if line.strip()]
+        return lines[0].split(":**", 1)[0].removeprefix("- **")
+    assert first_skill_group(xebia) == "Automation"
+    assert first_skill_group(bitdefender) == "Quality assurance"
+    validate_cv_document(xebia, candidate)
+    validate_cv_document(bitdefender, candidate)
 
 
 def test_reject_internal_ai_notes(candidate):
