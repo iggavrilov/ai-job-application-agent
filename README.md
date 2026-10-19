@@ -48,6 +48,22 @@ Public API documentation:
 
 Moldova is the candidate's only verified residence. EU countries (including Cyprus in the same category) and Romania are reviewable opportunities; EU residence/authorization is never assumed. Worldwide remote and explicit Moldova remote can qualify if no detected restrictions exist. Other locations, vague Europe/EMEA remote scopes, onsite relocation and unknown authorization need review. Country detection is conservative heuristic text processing, not a legal eligibility determination. Relevance filtering keeps Senior and Automation QA titles. Rule-based mandatory requirement detection intentionally favors review. All original descriptions are stored verbatim; HTML is rendered as plain text for safety. Missing structured requirements remain `unknown`; full descriptions are always available to matching.
 
+## Private CV preparation
+
+Keep the verified profile at `candidate_profile.json`; both it and all CV documents are Git-ignored. Build or refresh the general-purpose Master CV from those verified facts with:
+
+```powershell
+.\.venv313\Scripts\python.exe -m agent.cv_workflow --build-master
+```
+
+For a vacancy already marked Shortlisted, generate a tailored draft with its stable SQLite ID:
+
+```powershell
+.\.venv313\Scripts\python.exe -m agent.cv_workflow --job-id 4
+```
+
+The Master CV is saved to `private/cv/master_cv.md`; tailored drafts go under `private/application_pilot/`. The generator reads vacancy details from SQLite in read-only mode. It uses the profile as the source of candidate facts and the Master CV as the completeness check; the job description can change ordering and emphasis but cannot add qualifications or experience. Run the workflow tests with `python -m pytest tests/test_cv_workflow.py -q`.
+
 ## Scheduling on Windows
 
 In Task Scheduler, create a task for the current user. Set a daily trigger and these action fields (replace the path):
