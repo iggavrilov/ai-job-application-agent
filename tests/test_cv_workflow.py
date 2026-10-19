@@ -109,6 +109,48 @@ def test_tailoring_prioritizes_relevant_outcomes_and_reduces_repeated_bullets(ca
                              tailored_candidate, require_complete_experience=False)
 
 
+def test_employer_cv_omits_openai_codex_but_keeps_ai_assisted_qa(candidate):
+    skills = [*candidate.skills, "AI-assisted testing", "OpenAI Codex"]
+    extended_candidate = candidate.model_copy(update={"skills": skills})
+    cv = render_cv(extended_candidate)
+    validate_cv_document(cv, extended_candidate)
+    assert "OpenAI Codex" not in cv
+    assert "AI-assisted testing" in cv
+
+
+def test_tailored_skill_list_reduces_qa_synonyms_and_keeps_technologies(candidate):
+    skills = [
+        "Manual QA", "Exploratory testing", "Functional testing", "Regression testing",
+        "Smoke testing", "Integration testing", "Responsive testing", "Cross-browser testing",
+        "Accessibility testing", "UAT", "Web testing", "Mobile testing", "Test plans",
+        "Test cases", "QA documentation", "Defect investigation", "Playwright", "JavaScript",
+        "Node.js", "Selenium WebDriver", "C#", "BDD", "Page Object Model", "SQL",
+        "API testing", "REST", "JSON", "JSON:API", "Backend validation", "Data integrity",
+        "CMS validation", "Drupal", "Contentful", "Contentstack", "CMS migrations",
+        "Content models", "Publishing workflows", "Field mapping", "Visual regression",
+        "BackstopJS", "Performance testing", "Load testing", "k6", "Figma", "Storybook",
+        "Chromatic", "Chrome DevTools", "Azure DevOps", "Microsoft Dynamics CRM",
+        "AI-assisted testing", "OpenAI Codex",
+    ]
+    extended_candidate = candidate.model_copy(update={"skills": skills})
+    cv = render_cv(
+        extended_candidate, target_title="QA Engineer",
+        description="Manual QA functional regression testing for web applications, Selenium, API and SQL",
+    )
+    validate_cv_document(cv, extended_candidate, require_complete_skills=False)
+    technical = cv.split("## Technical skills", 1)[1].split("## Education", 1)[0]
+    qa_line = next(line for line in technical.splitlines() if line.startswith("- **Quality assurance:**"))
+    assert len(qa_line.split(":** ", 1)[1].split("; ")) <= 10
+    for technology in (
+        "Playwright", "JavaScript", "Node.js", "Selenium WebDriver", "C#", "BDD",
+        "Page Object Model", "SQL", "REST", "JSON:API", "Drupal", "Contentful",
+        "Contentstack", "BackstopJS", "k6", "Azure DevOps",
+    ):
+        assert technology in technical
+    assert "OpenAI Codex" not in technical
+    assert "AI-assisted testing" in technical
+
+
 def test_validator_rejects_target_labels_and_work_authorization(candidate):
     master = render_cv(candidate)
     with pytest.raises(CvValidationError, match="internal profile or AI commentary"):

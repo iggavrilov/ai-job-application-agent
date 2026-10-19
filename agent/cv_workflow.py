@@ -20,6 +20,8 @@ REQUIRED_SECTIONS = (
     'Contact', 'Professional summary', 'Professional experience', 'Technical skills',
     'Education', 'Certifications', 'Languages',
 )
+_CV_EXCLUDED_SKILLS = {'OpenAI Codex'}
+_MAX_TAILORED_QA_SKILLS = 10
 _INTERNAL_PATTERNS = (
     r'draft prepared from', r'source profile', r'as listed in (?:the )?candidate profile',
     r'not included in (?:the )?profile', r'candidate profile', r'internal (?:ai|note|comment)',
@@ -49,7 +51,7 @@ _SKILL_GROUPS = {
     ],
     'Tools': [
         'Figma', 'Storybook', 'Chromatic', 'Chrome DevTools', 'Azure DevOps',
-        'Microsoft Dynamics CRM', 'AI-assisted testing', 'OpenAI Codex',
+        'Microsoft Dynamics CRM', 'AI-assisted testing',
     ],
 }
 
@@ -119,7 +121,8 @@ def _grouped_skills(candidate: Candidate, description: str = '', target_title: s
               for name, skills in _SKILL_GROUPS.items()}
     groups = {name: skills for name, skills in groups.items() if skills}
     grouped = [skill for skills in groups.values() for skill in skills]
-    if Counter(grouped) != Counter(candidate.skills):
+    expected_skills = Counter(candidate.skills) - Counter(_CV_EXCLUDED_SKILLS)
+    if Counter(grouped) != expected_skills:
         raise CvValidationError('Every profile skill must appear exactly once in the CV skill groups')
     if not description:
         return groups
@@ -173,7 +176,11 @@ def render_cv(candidate: Candidate, *, target_title: str = '', description: str 
         lines.extend(f'- {bullet}' for bullet in bullets)
         lines.append('')
     lines += ['## Technical skills', '']
-    for group, skills in _grouped_skills(candidate, description, target_title).items():
+    skill_groups = _grouped_skills(candidate, description, target_title)
+    if description and 'Quality assurance' in skill_groups:
+        skill_groups['Quality assurance'] = _rank(
+            skill_groups['Quality assurance'], description, limit=_MAX_TAILORED_QA_SKILLS)
+    for group, skills in skill_groups.items():
         lines.append(f'- **{group}:** ' + '; '.join(skills))
     lines += ['', '## Education', '']
     lines.extend(f'- {item}' for item in candidate.education)
@@ -196,7 +203,8 @@ def _bullets(section: str) -> list[str]:
     return [line[2:].strip() for line in section.splitlines() if line.startswith('- ')]
 
 
-def validate_cv_document(text: str, candidate: Candidate, *, require_complete_experience: bool = True) -> None:
+def validate_cv_document(text: str, candidate: Candidate, *, require_complete_experience: bool = True,
+                         require_complete_skills: bool = True) -> None:
     lowered = text.casefold()
     if any(re.search(pattern, lowered, re.I) for pattern in _INTERNAL_PATTERNS):
         raise CvValidationError('CV contains internal profile or AI commentary')
@@ -261,7 +269,11 @@ def validate_cv_document(text: str, candidate: Candidate, *, require_complete_ex
         if ':** ' not in line:
             raise CvValidationError('Technical skill group is malformed')
         parsed_skills.extend(item.strip() for item in line.split(':** ', 1)[1].split(';') if item.strip())
-    if Counter(parsed_skills) != Counter(candidate.skills):
+    actual_skills = Counter(parsed_skills)
+    expected_skills = Counter(candidate.skills) - Counter(_CV_EXCLUDED_SKILLS)
+    unsupported_skills = actual_skills - expected_skills
+    missing_skills = expected_skills - actual_skills
+    if unsupported_skills or (require_complete_skills and missing_skills):
         raise CvValidationError('Technical skills differ from verified candidate skills')
     for heading, facts in (('Education', candidate.education),
                             ('Certifications', candidate.certifications),
@@ -304,7 +316,8 @@ def tailor_cv(master_text: str, candidate: Candidate, *, target_title: str,
               description: str) -> str:
     validate_cv_document(master_text, candidate)
     tailored = render_cv(candidate, target_title=target_title, description=description)
-    validate_cv_document(tailored, candidate, require_complete_experience=False)
+    validate_cv_document(tailored, candidate, require_complete_experience=False,
+                         require_complete_skills=False)
     return tailored
 
 
