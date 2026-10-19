@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import date
 import pandas as pd
 import streamlit as st
@@ -79,6 +80,10 @@ with factory() as session:
     st.caption(f'Main recommendations: {len(records)}; excluded/audit records: {len(all_records)-len(records)}. These counts do not establish suitability or hiring eligibility.')
     view = st.sidebar.selectbox('Vacancy view',['Recommendations','Excluded / audit','All stored vacancies'])
     visible = records if view == 'Recommendations' else [r for r in all_records if not r['_match'].in_main_recommendations] if view == 'Excluded / audit' else all_records
+    current_selection = st.session_state.get('selected_vacancy_id')
+    if current_selection is not None and current_selection not in {record['ID'] for record in visible}:
+        st.session_state.pop('selected_vacancy_id', None)
+        st.info('The selected vacancy is no longer in the current filtered results. Select a row to view its details.')
     if visible:
         filtered = visible
         for field in ['Region','Location','Remote status','Recommendation','Source','Review status']:
@@ -95,39 +100,78 @@ with factory() as session:
         filtered.sort(key=lambda r:ranking_key(r,order,remote_preferred))
         if remote_preferred:
             st.caption('Default priority: confirmed Moldova remote access, possible Moldova remote access (Needs Review), Moldova, Romania, then all EU countries. Professional fit is shown separately.')
-        st.dataframe(pd.DataFrame([{k:v for k,v in r.items() if not k.startswith('_')} for r in filtered]),hide_index=True,
-          column_config={'Application link':st.column_config.LinkColumn('Original posting')},use_container_width=True)
+        table = pd.DataFrame([{k:v for k,v in r.items() if not k.startswith('_')} for r in filtered])
+        # Streamlit reports selected row positions. Give each visible ID set its own
+        # widget key, then immediately translate the event to the stable DB ID.
+        # This prevents a stale row position from selecting a different job after
+        # filters change, while session state preserves the ID across ordinary reruns.
+        visible_ids = table['ID'].astype(int).tolist()
+        table_key = 'vacancy-table-' + hashlib.sha256(
+            json.dumps(visible_ids).encode('utf-8')
+        ).hexdigest()[:12]
+        table_event = st.dataframe(
+            table, hide_index=True, height=420,
+            column_config={'Application link':st.column_config.LinkColumn('Original posting')},
+            use_container_width=True, key=table_key,
+            on_select='rerun', selection_mode='single-row')
+        selected_id = st.session_state.get('selected_vacancy_id')
+        selected_rows = table_event.selection.rows
+        if selected_rows:
+            row_index = selected_rows[0]
+            if 0 <= row_index < len(visible_ids):
+                selected_id = visible_ids[row_index]
+                st.session_state['selected_vacancy_id'] = selected_id
+        filtered_by_id = {record['ID']:record for record in filtered}
+        if selected_id is not None and selected_id not in filtered_by_id:
+            st.session_state.pop('selected_vacancy_id', None)
+            selected_id = None
+            st.info('The selected vacancy is no longer in the current filtered results. Select a row to view its details.')
         if filtered:
-            selected = st.selectbox('Job details',filtered,format_func=lambda r:f"{r['ID']}: {r['Company']} — {r['Job title']}")
-            job, match = selected['_job'], selected['_match']
-            st.subheader(job.title)
-            st.write(f'{job.company} · {job.location} · {job.remote} · {job.employment_type}')
-            st.write('Geographic access:',match.eligibility,'—',match.geographic_reason)
-            st.write('Professional fit:',match.professional_fit or 'Needs Review','| Professional score:',match.professional_score)
-            st.write(match.professional_reason)
-            if match.exclusion_reasons:
-                st.write('Excluded from main recommendations:',match.exclusion_reasons)
-            st.write('Matching skills:',', '.join(match.matching_skills) or 'No explicit evidence detected')
-            st.write('Missing skills:',', '.join(match.missing_skills) or 'None identified; this is not proof all requirements are met')
-            st.write('Mandatory requirements:',match.mandatory_requirements or 'Not separately identified')
-            st.write(match.explanation)
-            st.caption('Evaluation method: '+match.method)
-            st.write('Extracted requirements:',job.requirements)
-            st.text(plain(job.description))
-            st.link_button('Open Original Job Posting',str(job.url))
-            if len(selected['_observations']) > 1:
-                st.caption('Source aliases share an exact canonical application URL. Distinct application URLs are stored and assessed separately.')
-                for index, observation in enumerate(selected['_observations'],1):
-                    st.link_button(f'Source posting {index}',str(observation.url))
-            review_statuses = ['New','Reviewed','Shortlisted','Rejected','Applied']
-            if selected['Review status'] not in review_statuses:
-                review_statuses.append(selected['Review status'])  # Preserve legacy labels until the user changes them.
-            new_status = st.selectbox('Update review status',review_statuses,
-                                      index=review_statuses.index(selected['Review status']))
-            if st.button('Save review status'):
-                session.get(JobRow,selected['ID']).status = new_status
-                session.commit()
-                st.rerun()
+            selected = filtered_by_id.get(selected_id)
+            if selected is None:
+                st.caption('Select a vacancy row above to review its details.')
+            else:
+                job, match = selected['_job'], selected['_match']
+                with st.container(border=True):
+                    st.markdown('### Job details')
+                    st.caption(f"Selected vacancy ID: {selected['ID']}")
+                    st.subheader(job.title)
+                    st.write(f'**{job.company}** · {job.location} · {job.remote} · {job.employment_type}')
+                    st.link_button('Open job posting',str(job.url),use_container_width=False)
+
+                    st.markdown('#### Professional fit')
+                    st.write(f"**{match.professional_fit or 'Needs Review'}** · Score: {match.professional_score if match.professional_score is not None else 'Not scored'}")
+                    st.write(match.professional_reason or match.explanation)
+                    st.write('**Matching skills:**',', '.join(match.matching_skills) or 'No explicit evidence detected')
+                    st.write('**Skills to review:**',', '.join(match.missing_skills) or 'None identified; this is not proof all requirements are met')
+                    if match.exclusion_reasons:
+                        st.write('**Recommendation concerns:**','; '.join(match.exclusion_reasons))
+                    st.caption('Evaluation method: '+match.method)
+
+                    st.markdown('#### Geographic eligibility')
+                    st.write(f'**{match.eligibility}** — {match.geographic_reason}')
+
+                    st.markdown('#### Requirements')
+                    st.write(job.requirements or match.mandatory_requirements or 'No separate requirements were published.')
+                    with st.expander('Full job description'):
+                        st.text(plain(job.description) or 'No description was published.')
+                    if len(selected['_observations']) > 1:
+                        st.markdown('#### Additional source postings')
+                        for index, observation in enumerate(selected['_observations'],1):
+                            st.link_button(f'Source posting {index}',str(observation.url),key=f"source-{selected['ID']}-{index}")
+
+                    review_statuses = ['New','Reviewed','Shortlisted','Rejected','Applied']
+                    if selected['Review status'] not in review_statuses:
+                        review_statuses.append(selected['Review status'])  # Preserve legacy labels until the user changes them.
+                    new_status = st.selectbox('Update review status',review_statuses,
+                                              index=review_statuses.index(selected['Review status']),
+                                              key=f"review-status-{selected['ID']}")
+                    if st.button('Save review status',key=f"save-review-status-{selected['ID']}"):
+                        session.get(JobRow,selected['ID']).status = new_status
+                        session.commit()
+                        st.rerun()
+        else:
+            st.info('No vacancies match the current filters.')
     else:
         st.info('No stored relevant vacancies in this view. Run discovery or inspect Excluded / audit for preserved reasons.')
     with st.expander('Search history'):
