@@ -7,6 +7,14 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+class CandidateExperience(BaseModel):
+    company: str
+    title: str
+    dates: str
+    location: str = ''
+    bullets: list[str] = Field(default_factory=list)
+
+
 class Candidate(BaseModel):
     name: str
     location: str
@@ -17,6 +25,9 @@ class Candidate(BaseModel):
     certifications: list[str]
     education: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
+    experience: list[CandidateExperience] = Field(default_factory=list)
+    professional_summary: str = ''
+    github: str = 'unknown'
     salary_expectations: str = 'unknown'
     citizenship: str = 'unknown'
     work_authorization: str = 'unknown'
