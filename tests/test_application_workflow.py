@@ -35,25 +35,22 @@ class FakeLocator:
     def fill(self, value):
         self.store[self.key] = value
 
-    def input_value(self):
-        return self.store.get(self.key, '')
-
-    def inner_text(self):
-        return 'Location (City)*' if self.key in {'label', 'label[for="candidate-location"]'} else ''
-
     def nth(self, index):
         return self if index == 0 else FakeLocator(present=False, store=self.store, key=self.key)
 
-    def get_attribute(self, name):
-        return 'candidate-location' if name == 'for' and self.key == 'label' else None
-
     def evaluate(self, expression):
         if 'tagName' in expression:
-            return {'tag': 'input', 'type': 'text'}
+            kind = self.store.get('_types', {}).get(self.key, ('input', 'text', ''))
+            return {'tag': kind[0], 'type': kind[1], 'role': kind[2]}
         return None
 
     def locator(self, selector):
-        return FakeLocator(present=self.present, store=self.store, key='country_control')
+        if selector == 'xpath=../../..':
+            return FakeLocator(present=self.present, store=self.store, key=self.key + '::wrapper')
+        if selector == '.select__single-value':
+            base = self.key.removesuffix('::wrapper')
+            return FakeLocator(present=self.present, store=self.store, key=base + '::selected')
+        return FakeLocator(present=self.present, store=self.store, key=self.key)
 
     def press_sequentially(self, value):
         self.store[self.key] = value
@@ -71,7 +68,36 @@ class FakeLocator:
         self.store[self.key] = False
 
     def click(self):
-        self.store['country_selected'] = True
+        if self.key.endswith('::wrapper'):
+            self.store['_active'] = self.key.removesuffix('::wrapper')
+        elif self.key.startswith('option::'):
+            selected = self.key.removeprefix('option::')
+            self.store.setdefault('_selected', {})[self.store['_active']] = selected
+            self.store[self.store['_active']] = selected
+        else:
+            self.store['country_selected'] = True
+
+    def all_inner_texts(self):
+        active = self.store.get('_active')
+        return self.store.get('_options', {}).get(active, [])
+
+    def press(self, value):
+        return None
+
+    def get_attribute(self, name):
+        if name == 'type':
+            return self.store.get('_types', {}).get(self.key, ('input', 'text', ''))[1]
+        return 'candidate-location' if name == 'for' and self.key == 'label' else None
+
+    def input_value(self):
+        if self.key.endswith('::selected'):
+            return self.store.get('_selected', {}).get(self.key.removesuffix('::selected'), '')
+        return self.store.get(self.key, '')
+
+    def inner_text(self):
+        if self.key.endswith('::selected'):
+            return self.store.get('_selected', {}).get(self.key.removesuffix('::selected'), '')
+        return 'Location (City)*' if self.key in {'label', 'label[for="candidate-location"]'} else ''
 
 
 class FakePhoneLocator(FakeLocator):
@@ -108,6 +134,7 @@ class FakeLabelCollection:
 class FakePage:
     def __init__(self):
         self.values = {}
+        self.values['_options'] = {'#country': ['Exampleland']}
         self.labels = [('Location (City)*', 'candidate-location')]
 
     def locator(self, selector):
@@ -115,8 +142,13 @@ class FakePage:
             return FakeLabelCollection(self.values, self.labels)
         return FakeLocator(store=self.values, key=selector)
 
-    def get_by_role(self, role, name=None):
-        return FakeLocator(present=(role == 'option'), store=self.values, key='country_option')
+    def get_by_role(self, role, name=None, exact=False):
+        if role != 'option':
+            return FakeLocator(present=False, store=self.values, key='')
+        if name is not None:
+            return FakeLocator(present=name in self.values.get('_options', {}).get(self.values.get('_active'), []),
+                               store=self.values, key='option::' + name)
+        return FakeLocator(present=True, store=self.values, key='options')
 
     def get_by_text(self, value, exact=False):
         return FakeLocator(present=False, store=self.values, key='country_text')
@@ -202,6 +234,80 @@ def test_location_scanner_fills_only_explicit_residence_or_preference_fields(can
     assert ambiguous.status == 'Needs candidate input'
 
 
+def test_vacancy_answer_override_fills_ambiguous_location_without_changing_residence(candidate):
+    mapped = map_verified_fields(_full_candidate(candidate), _confirmed_preferences())
+    page = FakePage()
+    page.labels = [
+        ('Current Residence*', 'residence'),
+        ('Location (City)*', 'ambiguous-location'),
+    ]
+    results = _fill_location_fields(page, mapped, location_override='Romanian Test City')
+    assert page.values['[id="residence"]'] == 'Sample City, Exampleland'
+    assert page.values['[id="ambiguous-location"]'] == 'Romanian Test City'
+    assert all(item.status == 'Completed' for item in results)
+
+
+def test_vacancy_answers_are_scoped_to_id_employer_and_exact_url():
+    from agent.application_workflow import application_answers_for
+    preferences = ApplicationPreferences(vacancy_answers={
+        '7': {
+            'employer': 'Synthetic Employer',
+            'application_url': 'https://job-boards.eu.greenhouse.io/synthetic/jobs/123',
+            'location_city': 'Romanian Test City',
+            'work_authorization': 'Yes',
+            'recruitment_data_processing_consent': 'Acknowledge',
+            'salary_form_value': '5,200 TEST/month',
+        }
+    })
+    assert application_answers_for(7, 'Synthetic Employer',
+        'https://job-boards.eu.greenhouse.io/synthetic/jobs/123', preferences).work_authorization == 'Yes'
+    assert application_answers_for(8, 'Synthetic Employer',
+        'https://job-boards.eu.greenhouse.io/synthetic/jobs/123', preferences) is None
+    with pytest.raises(ApplicationPreparationError, match='do not match'):
+        application_answers_for(7, 'Other Employer',
+            'https://job-boards.eu.greenhouse.io/synthetic/jobs/123', preferences)
+
+
+def test_confirmed_dropdown_answers_are_selected_and_read_back(candidate):
+    from agent.application_workflow import VacancyApplicationAnswers
+    page = FakePage()
+    answers = VacancyApplicationAnswers(
+        employer='Synthetic Employer',
+        application_url='https://job-boards.eu.greenhouse.io/synthetic/jobs/123',
+        location_city='Romanian Test City',
+        work_authorization='Yes',
+        recruitment_data_processing_consent='Acknowledge',
+        salary_form_value='5,200 TEST/month',
+    )
+    page.values['_types'] = {
+        '#country': ('input', 'text', 'combobox'),
+        '[id="candidate-location"]': ('input', 'text', 'combobox'),
+        '#question_9299067101': ('input', 'text', 'combobox'),
+        '#question_9299069101': ('input', 'text', 'combobox'),
+    }
+    page.values['_options'] = {
+        '#country': ['Exampleland +999'],
+        '[id="candidate-location"]': ['Romanian Test City'],
+        '#question_9299067101': ['Yes', 'No'],
+        '#question_9299069101': ['Acknowledge'],
+    }
+    results = _fill_form(page, _full_candidate(candidate), Path(__file__),
+                         _confirmed_preferences(), answers)
+    for label, expected in [
+        ('Location (City)', 'Romanian Test City'),
+        ('Work authorization', 'Yes'),
+        ('Recruitment data-processing consent', 'Acknowledge'),
+        ('Salary expectations', '5,200 TEST/month'),
+    ]:
+        result = next(item for item in results if item.label == label)
+        assert result.status == 'Completed'
+        assert expected in result.note
+    assert page.values['_selected']['[id="candidate-location"]'] == 'Romanian Test City'
+    assert page.values['_selected']['#question_9299067101'] == 'Yes'
+    assert page.values['_selected']['#question_9299069101'] == 'Acknowledge'
+    assert page.values['#question_9299068101'] == '5,200 TEST/month'
+
+
 def test_application_preferences_load_only_from_private_path(tmp_path):
     private = tmp_path / 'private'
     private.mkdir()
@@ -232,7 +338,7 @@ def test_greenhouse_mock_form_verifies_names_and_uploads_cv(tmp_path, candidate)
     assert 'ambiguous' in location_result.note
     assert page.values['#question_9299068101'] == '5,200 TEST/month'
     assert page.values['input[type="file"]#resume'] == str(cv.resolve())
-    assert page.values['country_selected'] is True
+    assert page.values['_selected']['#country'] == 'Exampleland'
     assert not any('authorization' in field or 'consent' in field for field in page.values)
 
 

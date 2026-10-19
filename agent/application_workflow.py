@@ -10,14 +10,15 @@ import json
 import os
 import re
 import sqlite3
+import unicodedata
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 from urllib.parse import quote, urlparse
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from sqlalchemy.engine import make_url
 
@@ -48,6 +49,19 @@ class PreparationResult:
     preview_path: str
 
 
+class VacancyApplicationAnswers(BaseModel):
+    """Answers confirmed for one specific vacancy and official application URL."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    employer: str
+    application_url: str
+    location_city: str | None = None
+    work_authorization: Literal['Yes', 'No'] | None = None
+    recruitment_data_processing_consent: Literal['Acknowledge'] | None = None
+    salary_form_value: str | None = None
+
+
 class ApplicationPreferences(BaseModel):
     """Candidate-confirmed employer-form preferences, loaded only from private storage."""
 
@@ -61,6 +75,11 @@ class ApplicationPreferences(BaseModel):
     preferred_job_location_romania: str | None = None
     preferred_job_location_moldova: str | None = None
     salary_expectation: str | None = None
+    salary_expectation_ron: str | None = None
+    salary_conversion_rate: str | None = None
+    salary_conversion_date: str | None = None
+    salary_conversion_source: str | None = None
+    vacancy_answers: dict[str, VacancyApplicationAnswers] = Field(default_factory=dict)
 
 
 REVIEW_FIELDS = (
@@ -151,6 +170,17 @@ def load_application_preferences(root: Path = ROOT) -> ApplicationPreferences:
         ) from None
 
 
+def application_answers_for(job_id: int, employer: str, application_url: str,
+                            preferences: ApplicationPreferences) -> VacancyApplicationAnswers | None:
+    """Return answers only when vacancy, employer, and URL all match the private record."""
+    answers = preferences.vacancy_answers.get(str(job_id))
+    if answers is None:
+        return None
+    if answers.employer.casefold() != employer.casefold() or answers.application_url != application_url:
+        raise ApplicationPreparationError('Private application answers do not match this vacancy and application URL.')
+    return answers
+
+
 def map_verified_fields(candidate: Candidate,
                         preferences: ApplicationPreferences | None = None) -> dict[str, str]:
     """Map candidate facts and confirmed preferences; legal answers remain excluded."""
@@ -230,7 +260,7 @@ def _page_submit_guard_script() -> str:
     })();"""
 
 
-def _fill_verified_text(target, locator_description: str, value: str) -> None:
+def _fill_verified_text(target, locator_description: str, value: str) -> str:
     if target.count() != 1 or not target.is_visible():
         raise ApplicationPreparationError('A supported Greenhouse field is missing or ambiguous: ' + locator_description)
     fill_supported_control(target, 'text', value)
@@ -246,13 +276,15 @@ def _fill_verified_text(target, locator_description: str, value: str) -> None:
         matches = bool(expected_digits) and expected_digits == actual_digits
     if not matches:
         raise ApplicationPreparationError('A supported Greenhouse text field did not retain its verified value (' + locator_description + ').')
+    return actual
 
 
-def _fill_label(page, locator: str, value: str) -> None:
-    _fill_verified_text(page.locator(locator), locator, value)
+def _fill_label(page, locator: str, value: str) -> str:
+    return _fill_verified_text(page.locator(locator), locator, value)
 
 
-def _fill_location_fields(page, mapped: dict[str, str]) -> tuple[FieldResult, ...]:
+def _fill_location_fields(page, mapped: dict[str, str],
+                         location_override: str | None = None) -> tuple[FieldResult, ...]:
     """Fill only location controls whose labels state residence or preferred country."""
     labels = page.locator('label')
     results: list[FieldResult] = []
@@ -262,6 +294,8 @@ def _fill_location_fields(page, mapped: dict[str, str]) -> tuple[FieldResult, ..
         value, note = location_value_for_label(label_text, mapped)
         if value is None and note is None:
             continue
+        if value is None and location_override and note and 'generic location field is ambiguous' in note:
+            value, note = location_override, None
         display_label = label_text.rstrip('*') or 'Location field'
         field_id = label.get_attribute('for')
         if not field_id:
@@ -275,35 +309,69 @@ def _fill_location_fields(page, mapped: dict[str, str]) -> tuple[FieldResult, ..
             results.append(FieldResult(display_label, 'Needs candidate input', note or 'Location meaning must be confirmed.'))
             continue
         try:
-            kind = target.evaluate('(el) => ({tag:el.tagName.toLowerCase(), type:(el.getAttribute("type") || "").toLowerCase()})')
+            kind = target.evaluate('(el) => ({tag:el.tagName.toLowerCase(), type:(el.getAttribute("type") || "").toLowerCase(), role:(el.getAttribute("role") || "")})')
         except Exception:
             kind = {}
         if kind.get('tag') not in {'input', 'textarea'} or (kind.get('tag') == 'input' and kind.get('type') not in {'', 'text'}):
             results.append(FieldResult(display_label, 'Needs candidate input',
                                        'The location control type is not supported for safe automatic entry.'))
             continue
-        _fill_verified_text(target, selector, value)
-        results.append(FieldResult(display_label, 'Completed'))
+        if kind.get('role') == 'combobox':
+            verified_value = _select_react_option(page, selector, value)
+        else:
+            verified_value = _fill_verified_text(target, selector, value)
+        results.append(FieldResult(display_label, 'Completed', 'Verified value: ' + verified_value))
     return tuple(results)
 
 
-def _select_country(page, country: str) -> None:
-    field = page.locator('#country')
+def _fold_option_text(value: str) -> str:
+    decomposed = unicodedata.normalize('NFKD', value.casefold())
+    return ''.join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
+def _option_aliases(value: str) -> tuple[str, ...]:
+    aliases = [value]
+    if '(' in value and ')' in value:
+        before, rest = value.split('(', 1)
+        aliases.extend([before.strip(), rest.split(')', 1)[0].strip()])
+    return tuple(alias for alias in aliases if alias)
+
+
+def _option_matches(expected: str, offered: str) -> bool:
+    folded_offer = _fold_option_text(offered)
+    return any(_fold_option_text(alias) in folded_offer for alias in _option_aliases(expected))
+
+
+def _select_react_option(page, selector: str, value: str) -> str:
+    field = page.locator(selector)
     if field.count() != 1 or not field.is_visible():
-        raise ApplicationPreparationError('Greenhouse country field is missing or ambiguous.')
-    # Greenhouse uses a React combobox whose text input is only a few pixels wide;
-    # clicking its visible control container is required before keyboard entry.
+        raise ApplicationPreparationError('A supported Greenhouse choice field is missing or ambiguous: ' + selector)
     field.locator('xpath=../../..').click()
-    field.press_sequentially(country)
-    option = page.get_by_role('option', name=re.compile(r'^' + re.escape(country) + r'(?:\s|$)', re.I))
-    if option.count() == 1 and option.is_visible():
-        option.click()
-        return
-    raise ApplicationPreparationError('Country suggestion could not be selected safely; finish this field manually.')
+    field.press_sequentially(value.split(' (', 1)[0])
+    option_texts = page.get_by_role('option').all_inner_texts()
+    matches = [text for text in option_texts if _option_matches(value, text)]
+    if len(matches) != 1:
+        raise ApplicationPreparationError('A supported Greenhouse choice could not be selected uniquely (' + selector + ').')
+    option = page.get_by_role('option', name=matches[0], exact=True)
+    if option.count() != 1 or not option.is_visible():
+        raise ApplicationPreparationError('A supported Greenhouse choice could not be selected safely (' + selector + ').')
+    option.click()
+    selected = field.locator('xpath=../../..').locator('.select__single-value')
+    if selected.count() != 1:
+        raise ApplicationPreparationError('A selected Greenhouse choice could not be read back (' + selector + ').')
+    actual = ' '.join(selected.inner_text().split())
+    if not _option_matches(value, actual):
+        raise ApplicationPreparationError('A Greenhouse choice did not retain its confirmed value (' + selector + ').')
+    return actual
+
+
+def _select_country(page, country: str) -> str:
+    return _select_react_option(page, '#country', country)
 
 
 def _fill_form(page, candidate: Candidate, cv_path: Path,
-               preferences: ApplicationPreferences | None = None) -> tuple[FieldResult, ...]:
+               preferences: ApplicationPreferences | None = None,
+               answers: VacancyApplicationAnswers | None = None) -> tuple[FieldResult, ...]:
     values = map_verified_fields(candidate, preferences)
     mappings = (
         ('First name', '#first_name', values['first_name']),
@@ -317,17 +385,27 @@ def _fill_form(page, candidate: Candidate, cv_path: Path,
             continue
         _fill_label(page, selector, value)
         completed.append(FieldResult(label, 'Completed'))
-    _select_country(page, values['country'])
-    completed.append(FieldResult('Country', 'Completed'))
-    _fill_label(page, '#phone', values['phone'])
-    completed.append(FieldResult('Phone', 'Completed'))
+    country_value = _select_country(page, values['country'])
+    completed.append(FieldResult('Country', 'Completed', 'Verified value: ' + country_value))
+    phone_value = _fill_label(page, '#phone', values['phone'])
+    completed.append(FieldResult('Phone', 'Completed', 'Verified phone digits in live DOM'))
 
-    completed.extend(_fill_location_fields(page, values))
+    completed.extend(_fill_location_fields(
+        page, values, answers.location_city if answers else None))
 
-    salary = values['salary_expectation']
+    if answers and answers.work_authorization:
+        verified = _select_react_option(page, '#question_9299067101', answers.work_authorization)
+        completed.append(FieldResult('Work authorization', 'Completed', 'Verified value: ' + verified))
+    if answers and answers.recruitment_data_processing_consent:
+        verified = _select_react_option(page, '#question_9299069101',
+                                        answers.recruitment_data_processing_consent)
+        completed.append(FieldResult('Recruitment data-processing consent', 'Completed',
+                                     'Verified value: ' + verified))
+
+    salary = ((answers.salary_form_value if answers else None) or values['salary_expectation'])
     if salary:
-        _fill_label(page, '#question_9299068101', salary)
-        completed.append(FieldResult('Salary expectations', 'Completed'))
+        verified = _fill_label(page, '#question_9299068101', salary)
+        completed.append(FieldResult('Salary expectations', 'Completed', 'Verified value: ' + verified))
 
     resume = page.locator('input[type="file"]#resume')
     if not cv_path.is_file() or resume.count() != 1:
@@ -358,7 +436,8 @@ class ApplicationFormAdapter(Protocol):
     platform: str
 
     def fill(self, page, candidate: Candidate, cv_path: Path,
-             preferences: ApplicationPreferences | None = None) -> tuple[FieldResult, ...]: ...
+             preferences: ApplicationPreferences | None = None,
+             answers: VacancyApplicationAnswers | None = None) -> tuple[FieldResult, ...]: ...
 
 
 class GreenhouseAdapter:
@@ -367,8 +446,9 @@ class GreenhouseAdapter:
     platform = 'greenhouse'
 
     def fill(self, page, candidate: Candidate, cv_path: Path,
-             preferences: ApplicationPreferences | None = None) -> tuple[FieldResult, ...]:
-        return _fill_form(page, candidate, cv_path, preferences)
+             preferences: ApplicationPreferences | None = None,
+             answers: VacancyApplicationAnswers | None = None) -> tuple[FieldResult, ...]:
+        return _fill_form(page, candidate, cv_path, preferences, answers)
 
 
 ADAPTERS: dict[str, ApplicationFormAdapter] = {'greenhouse': GreenhouseAdapter()}
@@ -393,10 +473,18 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
         raise ApplicationPreparationError('Private application metadata is missing or invalid.') from None
     if metadata.get('job_id') != job_id or metadata.get('application_url') != str(job.url):
         raise ApplicationPreparationError('The private application metadata does not match the selected vacancy URL.')
+    application_answers = application_answers_for(job_id, job.company, str(job.url), preferences)
     directory, preview_path, state_path = _private_paths(root, job_id)
     directory.mkdir(parents=True, exist_ok=True)
     preview_image = directory / 'application_preview.png'
-    fields_for_review = [FieldResult(label, 'Needs candidate input', reason) for label, reason in REVIEW_FIELDS]
+    fields_for_review = [
+        FieldResult(label, 'Needs candidate input', reason)
+        for label, reason in REVIEW_FIELDS
+        if not application_answers or (
+            (label.startswith('Are you legally') and not application_answers.work_authorization)
+            or (label == 'Recruitment data-processing consent'
+                and not application_answers.recruitment_data_processing_consent))
+    ]
     _write_json(state_path, {'status': 'Starting', 'job_id': job_id, 'completed_fields': [],
                              'candidate_input_fields': [asdict(item) for item in fields_for_review],
                              'application_url': str(job.url), 'preview_path': str(preview_path)})
@@ -426,7 +514,7 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
             raise ApplicationPreparationError('A security challenge is visible. Preparation stopped; complete it manually if appropriate.')
         try:
             adapter = ADAPTERS[job.platform.casefold()]
-            results = adapter.fill(page, candidate, cv_path, preferences)
+            results = adapter.fill(page, candidate, cv_path, preferences, application_answers)
             completed = tuple(item for item in results if item.status in {'Completed', 'Uploaded'})
             location_reviews = tuple(item for item in results if item.status == 'Needs candidate input')
         except Exception:
