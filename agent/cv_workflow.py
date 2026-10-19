@@ -20,6 +20,8 @@ REQUIRED_SECTIONS = (
     'Contact', 'Professional summary', 'Professional experience', 'Technical skills',
     'Education', 'Certifications', 'Languages',
 )
+_CV_EXCLUDED_SKILLS = {'OpenAI Codex'}
+_MAX_TAILORED_QA_SKILLS = 10
 _INTERNAL_PATTERNS = (
     r'draft prepared from', r'source profile', r'as listed in (?:the )?candidate profile',
     r'not included in (?:the )?profile', r'candidate profile', r'internal (?:ai|note|comment)',
@@ -49,7 +51,7 @@ _SKILL_GROUPS = {
     ],
     'Tools': [
         'Figma', 'Storybook', 'Chromatic', 'Chrome DevTools', 'Azure DevOps',
-        'Microsoft Dynamics CRM', 'AI-assisted testing', 'OpenAI Codex',
+        'Microsoft Dynamics CRM', 'AI-assisted testing',
     ],
 }
 
@@ -68,16 +70,40 @@ def _safe_inline(value: str) -> str:
 
 
 def _tokens(text: str) -> set[str]:
-    return set(re.findall(r'[a-z0-9+#.]+', text.casefold()))
+    stop_words = {'a', 'an', 'and', 'by', 'for', 'from', 'in', 'of', 'on', 'the', 'through', 'to', 'with'}
+    return set(re.findall(r'[a-z0-9+#.]+', text.casefold())) - stop_words
 
 
-def _rank(items: list[str], description: str) -> list[str]:
+_OUTCOME_STEMS = (
+    'reduc', 'increas', 'expand', 'identif', 'discover', 'resolv', 'verif',
+    'deploy', 'improv', 'deliver',
+)
+
+
+def _is_outcome(item: str) -> bool:
+    return any(re.search(r'\b' + stem + r'\w*\b', item.casefold())
+               for stem in _OUTCOME_STEMS)
+
+
+def _rank(items: list[str], description: str, *, limit: int | None = None) -> list[str]:
     words = _tokens(description)
     normalized_description = _normal(description)
     indexed = list(enumerate(items))
-    return [item for _, item in sorted(indexed, key=lambda pair: (
+    ranked = sorted(indexed, key=lambda pair: (
         -(1 if _normal(pair[1]) in normalized_description else 0),
-        -len(_tokens(pair[1]) & words), pair[0]))]
+        -len(_tokens(pair[1]) & words),
+        -(1 if _is_outcome(pair[1]) else 0),
+        pair[0]))
+    if limit is not None:
+        ranked = ranked[:limit]
+    return [item for _, item in ranked]
+
+
+def _tailored_bullets(items: list[str], description: str, limit: int = 6) -> list[str]:
+    ranked = _rank(items, description)
+    outcomes = [item for item in ranked if _is_outcome(item)]
+    other = [item for item in ranked if not _is_outcome(item)]
+    return (outcomes + other)[:limit]
 
 
 _GROUP_TERMS = {
@@ -95,7 +121,8 @@ def _grouped_skills(candidate: Candidate, description: str = '', target_title: s
               for name, skills in _SKILL_GROUPS.items()}
     groups = {name: skills for name, skills in groups.items() if skills}
     grouped = [skill for skills in groups.values() for skill in skills]
-    if Counter(grouped) != Counter(candidate.skills):
+    expected_skills = Counter(candidate.skills) - Counter(_CV_EXCLUDED_SKILLS)
+    if Counter(grouped) != expected_skills:
         raise CvValidationError('Every profile skill must appear exactly once in the CV skill groups')
     if not description:
         return groups
@@ -143,11 +170,17 @@ def render_cv(candidate: Candidate, *, target_title: str = '', description: str 
         lines.append(f'### {role.title} | {role.company} | {role.dates}')
         if role.location:
             lines.append(f'**Location:** {role.location}')
-        bullets = _rank(role.bullets, description) if description else role.bullets
+        # Keep Master CV comprehensive. Tailored CVs prioritize relevant outcomes and
+        # omit lower-priority repetitive responsibilities while retaining exact source facts.
+        bullets = _tailored_bullets(role.bullets, description, limit=6) if description else role.bullets
         lines.extend(f'- {bullet}' for bullet in bullets)
         lines.append('')
     lines += ['## Technical skills', '']
-    for group, skills in _grouped_skills(candidate, description, target_title).items():
+    skill_groups = _grouped_skills(candidate, description, target_title)
+    if description and 'Quality assurance' in skill_groups:
+        skill_groups['Quality assurance'] = _rank(
+            skill_groups['Quality assurance'], description, limit=_MAX_TAILORED_QA_SKILLS)
+    for group, skills in skill_groups.items():
         lines.append(f'- **{group}:** ' + '; '.join(skills))
     lines += ['', '## Education', '']
     lines.extend(f'- {item}' for item in candidate.education)
@@ -170,7 +203,8 @@ def _bullets(section: str) -> list[str]:
     return [line[2:].strip() for line in section.splitlines() if line.startswith('- ')]
 
 
-def validate_cv_document(text: str, candidate: Candidate) -> None:
+def validate_cv_document(text: str, candidate: Candidate, *, require_complete_experience: bool = True,
+                         require_complete_skills: bool = True) -> None:
     lowered = text.casefold()
     if any(re.search(pattern, lowered, re.I) for pattern in _INTERNAL_PATTERNS):
         raise CvValidationError('CV contains internal profile or AI commentary')
@@ -213,7 +247,12 @@ def validate_cv_document(text: str, candidate: Candidate) -> None:
     actual_bullets = _bullets(experience)
     allowed_locations = {f'**Location:** {entry.location}' for entry in candidate.experience if entry.location}
     actual_locations = {line for line in experience.splitlines() if line.startswith('**Location:** ')}
-    if actual_headers != expected_headers or Counter(actual_bullets) != Counter(expected_bullets):
+    actual_counts = Counter(actual_bullets)
+    expected_counts = Counter(expected_bullets)
+    unsupported_bullets = actual_counts - expected_counts
+    missing_bullets = expected_counts - actual_counts
+    if (actual_headers != expected_headers or unsupported_bullets
+            or (require_complete_experience and missing_bullets)):
         raise CvValidationError('Professional experience contains missing or unsupported profile facts')
     if actual_locations != allowed_locations:
         raise CvValidationError('Professional experience contains unsupported locations')
@@ -230,7 +269,11 @@ def validate_cv_document(text: str, candidate: Candidate) -> None:
         if ':** ' not in line:
             raise CvValidationError('Technical skill group is malformed')
         parsed_skills.extend(item.strip() for item in line.split(':** ', 1)[1].split(';') if item.strip())
-    if Counter(parsed_skills) != Counter(candidate.skills):
+    actual_skills = Counter(parsed_skills)
+    expected_skills = Counter(candidate.skills) - Counter(_CV_EXCLUDED_SKILLS)
+    unsupported_skills = actual_skills - expected_skills
+    missing_skills = expected_skills - actual_skills
+    if unsupported_skills or (require_complete_skills and missing_skills):
         raise CvValidationError('Technical skills differ from verified candidate skills')
     for heading, facts in (('Education', candidate.education),
                             ('Certifications', candidate.certifications),
@@ -273,7 +316,8 @@ def tailor_cv(master_text: str, candidate: Candidate, *, target_title: str,
               description: str) -> str:
     validate_cv_document(master_text, candidate)
     tailored = render_cv(candidate, target_title=target_title, description=description)
-    validate_cv_document(tailored, candidate)
+    validate_cv_document(tailored, candidate, require_complete_experience=False,
+                         require_complete_skills=False)
     return tailored
 
 
