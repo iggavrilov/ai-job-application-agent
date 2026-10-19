@@ -1,8 +1,8 @@
-# AI Job Application Agent — MVP-01
+# AI Job Application Agent вЂ” MVP-01
 
 Local Python 3.12+ Streamlit app for discovering and reviewing QA vacancies. No application submission, LinkedIn automation, browser automation, or authenticated employer access.
 
-Current status: [verified QA discovery report](QA_DISCOVERY_REPORT.md) supersedes earlier snapshots. The registry has 27 verified Greenhouse/Lever employer boards. Live ingestion fetched 2,453 postings and retained 10 QA/test vacancies; 9 require manual eligibility review. The full suite passes 114 tests on Windows Python 3.12 without private profile files. See [Windows setup](WINDOWS_SETUP.md) for installation and private profile handling. Discovery CLI JSON and the dashboard now include per-source rejection and persistence diagnostics.
+Current status: [geography and professional relevance review](RELEVANCE_REVIEW.md). There are 30 verified employer boards; the live run fetched 2,755 postings and retained 44 current records. The main list contains 23 records requiring geographic review, with zero confirmed Moldova-accessible vacancies. Professional fit is separate from eligibility. The suite passes 164 tests and 48 subtests on Windows Python 3.12. See [Windows setup](WINDOWS_SETUP.md); historical discovery results remain in [QA_DISCOVERY_REPORT.md](QA_DISCOVERY_REPORT.md).
 
 ## Windows setup (PowerShell)
 
@@ -40,9 +40,9 @@ Linux/macOS: use `python3 -m venv .venv` and `.venv/bin/python` in place of the 
 
 Public API documentation:
 
-- Greenhouse: https://developers.greenhouse.io/job-board.html — `GET https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true`
-- Lever: https://github.com/lever/postings-api — `GET https://api.lever.co/v0/postings/{board}?mode=json`
-- Ashby: https://developers.ashbyhq.com/docs/public-job-posting-api — `GET https://api.ashbyhq.com/posting-api/job-board/{board}?includeCompensation=true`
+- Greenhouse: https://developers.greenhouse.io/job-board.html вЂ” `GET https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true`
+- Lever: https://github.com/lever/postings-api вЂ” `GET https://api.lever.co/v0/postings/{board}?mode=json`
+- Ashby: https://developers.ashbyhq.com/docs/public-job-posting-api вЂ” `GET https://api.ashbyhq.com/posting-api/job-board/{board}?includeCompensation=true`
 
 `config/search_rules.yaml` controls title keywords, weights and request interval. Salary minimum is null: salary is preserved but never penalized, and its 15 points redistribute in proportion to 35:20:20:10. Non-null salary preferences deliberately raise a configuration error until currency/period-aware comparison is implemented. Unknown language proficiency receives neutral additional-requirement credit, never an assertion of proficiency.
 
@@ -56,11 +56,11 @@ In Task Scheduler, create a task for the current user. Set a daily trigger and t
 - Arguments: `-m agent.cli discover`
 - Start in: `C:\path\job-agent`
 
-Choose “Do not start a new instance” in task settings. An OS-backed file lock also prevents concurrent dashboard/CLI searches. Logs are at `data/agent.log`; search outcomes/errors are persisted. Interrupted runs can remain marked Running in history; the OS releases the lock, allowing the next search. CLI exit codes: 0 success, 1 failed, 2 overlap, 3 partial (review warnings).
+Choose вЂњDo not start a new instanceвЂќ in task settings. An OS-backed file lock also prevents concurrent dashboard/CLI searches. Logs are at `data/agent.log`; search outcomes/errors are persisted. Interrupted runs can remain marked Running in history; the OS releases the lock, allowing the next search. CLI exit codes: 0 success, 1 failed, 2 overlap, 3 partial (review warnings).
 
 ## Persistence and privacy
 
-SQLite tables: candidate_profiles, companies, job_sources, jobs, job_observations, job_matches, search_runs, application_records (reserved, never submitted). Jobs retain first discovered and last checked dates. Latest source content is updated on rediscovery. Match history appends with candidate snapshot, job-description snapshot and logic/config version. Source identities and latest per-source payloads are retained in the additive job_observations table. Deduplication uses platform/board/source ID, canonical URL and normalized company/title/location; same-title vacancies at one location may merge. No automatic deletion or application occurs. Search history distinguishes fetched board postings from stored relevant vacancies. “New” means not reviewed.
+SQLite tables: candidate_profiles, companies, job_sources, jobs, job_observations, job_matches, search_runs, application_records (reserved, never submitted). Jobs retain first discovered and last checked dates. Latest source content is updated on rediscovery. Match history appends with candidate snapshot, job-description snapshot and logic/config version. Source identities and latest per-source payloads are retained in the additive job_observations table. Deduplication uses platform/board/source ID, canonical URL and normalized company/title/location; same-title vacancies at one location may merge. No automatic deletion or application occurs. Search history distinguishes fetched board postings from stored relevant vacancies. вЂњNewвЂќ means not reviewed.
 
 Local profile, `.env`, PDFs, logs and databases are excluded from Git. Keep the local dashboard bound to 127.0.0.1. No credentials ship with the project. No fabricated live or demo results are used.
 

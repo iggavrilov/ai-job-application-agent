@@ -4,7 +4,7 @@ import hashlib
 from collections import Counter
 import httpx
 from filelock import FileLock
-from sqlalchemy import select, or_
+from sqlalchemy import select
 from agent.settings import ROOT, profile, rules
 from agent.registry import load_boards
 from agent.models import now
@@ -25,7 +25,7 @@ def upsert_job(session, job, source):
         if alias:
             row = session.get(JobRow,alias.job_id)
     if row is None:
-        row = session.scalar(select(JobRow).where(or_(JobRow.canonical_url==canonical(job.url),JobRow.fingerprint==fingerprint(job))).order_by(JobRow.id))
+        row = session.scalar(select(JobRow).where(JobRow.canonical_url==canonical(job.url)).order_by(JobRow.id))
     is_new = row is None
     if row is None:
         row = JobRow(source_id=source.id,identity=identity,canonical_url=canonical(job.url),fingerprint=fingerprint(job),payload=job.model_dump_json())
@@ -58,6 +58,7 @@ def discover(use_ai=True):
             run_id = run.id
             errors, successes, fetched, added = [], 0, 0, 0
             diagnostics = {'boards': [], 'totals': {}}
+            committed_results = {}
             try:
                 candidate, config = profile(), rules()
                 boards, registry_errors = load_boards()
@@ -77,7 +78,9 @@ def discover(use_ai=True):
                         report = dict(company=board['company'], platform=board['platform'], board=board['board'],
                                       published=None, normalized=None, malformed=None, title_rejected=0, relevant=0,
                                       new=0, existing_or_merged=0, committed=False,
-                                      stage='collection', rejections={}, eligibility={}, recommendations={})
+                                      main_recommendations=0, excluded_from_main=0,
+                                      geography_excluded=0, professional_excluded=0,
+                                      stage='collection', rejections={}, eligibility={}, recommendations={}, professional_fit={})
                         diagnostics['boards'].append(report)
                         try:
                             jobs = collect(board,client,config.get('request_interval_seconds',1))
@@ -85,6 +88,8 @@ def discover(use_ai=True):
                             report.update(published=getattr(jobs,'published_count',len(jobs)), normalized=len(jobs), malformed=len(warnings))
                             report['stage'] = 'persistence'
                             rejections, eligibility, recommendations = Counter(), Counter(), Counter()
+                            professional = Counter()
+                            board_results = {}
                             new_count = 0
                             company = session.scalar(select(Company).where(Company.name==board['company']))
                             if company is None:
@@ -105,17 +110,24 @@ def discover(use_ai=True):
                                 row, is_new = upsert_job(session,job,source)
                                 new_count += int(is_new)
                                 result = evaluate(job,candidate,config,use_ai)
+                                board_results[row.id] = result
                                 eligibility[result.eligibility] += 1
                                 recommendations[result.recommendation] += 1
+                                professional[result.professional_fit] += 1
+                                report['main_recommendations'] += int(result.in_main_recommendations)
+                                report['excluded_from_main'] += int(not result.in_main_recommendations)
+                                report['geography_excluded'] += int(result.eligibility == 'Ineligible')
+                                report['professional_excluded'] += int(result.professional_fit == 'Not Recommended')
                                 version = result.version+':'+hashlib.sha256(json.dumps(config,sort_keys=True).encode()).hexdigest()[:10]
                                 # Context is stored with each historical match, not just latest job text.
                                 context = result.model_dump() | {'job_snapshot':job.model_dump(mode='json'),'search_rules':config}
                                 session.add(MatchRow(job_id=row.id,candidate_id=candidate_id,payload=json.dumps(context),version=version))
                             session.commit()
+                            committed_results.update(board_results)
                             report.update(committed=True, new=new_count, existing_or_merged=report['relevant']-new_count,
                                           stage='committed',
                                           title_rejected=sum(rejections.values()), rejections=dict(rejections),
-                                          eligibility=dict(eligibility), recommendations=dict(recommendations))
+                                          eligibility=dict(eligibility), recommendations=dict(recommendations), professional_fit=dict(professional))
                             # Count only committed work. Failure rolls back the whole board, then continues.
                             fetched += len(jobs)
                             added += new_count
@@ -143,11 +155,18 @@ def discover(use_ai=True):
             totals['active_boards'] = len(diagnostics['boards'])
             totals['committed_boards'] = sum(report['committed'] for report in diagnostics['boards'])
             totals['failed_boards'] = totals['active_boards'] - totals['committed_boards']
+            totals['unique_records'] = len(committed_results)
+            totals['unique_main_records'] = sum(result.in_main_recommendations for result in committed_results.values())
+            totals['unique_excluded_records'] = totals['unique_records'] - totals['unique_main_records']
+            for result in committed_results.values():
+                if result.in_main_recommendations:
+                    totals['unique_main_professional_' + result.professional_fit] += 1
+                    totals['unique_main_geography_' + result.eligibility] += 1
             for report in diagnostics['boards']:
                 for key in ('published','normalized','malformed'):
                     totals[key] += report[key] or 0
                 if report['committed']:
-                    for key in ('title_rejected','relevant','new','existing_or_merged'):
+                    for key in ('title_rejected','relevant','new','existing_or_merged','main_recommendations','excluded_from_main','geography_excluded','professional_excluded'):
                         totals[key] += report[key]
                     for key, value in report['eligibility'].items():
                         totals['eligibility_' + key] += value
@@ -155,6 +174,8 @@ def discover(use_ai=True):
                         totals['rejected_' + key] += value
                     for key, value in report['recommendations'].items():
                         totals['recommendation_' + key] += value
+                    for key, value in report['professional_fit'].items():
+                        totals['professional_' + key] += value
                 else:
                     totals['rolled_back_normalized'] += report['normalized'] or 0
             diagnostics['totals'] = dict(totals)

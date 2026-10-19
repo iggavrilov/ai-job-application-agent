@@ -61,4 +61,12 @@ class Match(BaseModel):
     explanation: str
     recommendation: Literal['Strong Match', 'Good Match', 'Needs Review', 'Not Recommended']
     method: str
-    version: str = 'mvp-01.3'
+    # Defaults permit reading historical matches; legacy rows are reassessed by the UI.
+    professional_score: float | None = Field(default=None, ge=0, le=100)
+    professional_fit: Literal['Strong Match', 'Good Match', 'Needs Review', 'Not Recommended'] | None = None
+    professional_reason: str = ''
+    geographic_reason: str = ''
+    geographic_priority: int = Field(default=5, ge=0)
+    in_main_recommendations: bool = False
+    exclusion_reasons: list[str] = Field(default_factory=list)
+    version: str = 'mvp-01.5'

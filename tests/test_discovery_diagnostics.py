@@ -80,6 +80,7 @@ def test_diagnostics_reconcile_persist_and_deduplicate(tmp_path, monkeypatch):
     assert totals['published']==totals['normalized']+totals['malformed']==4
     assert totals['normalized']==totals['relevant']+totals['title_rejected']==3
     assert totals['relevant']==totals['new']+totals['existing_or_merged']==2
+    assert totals['unique_records']==totals['unique_main_records']==2
     assert totals['eligibility_Needs Review']==1
     second=discovery.discover(False)
     assert second['new_relevant']==0

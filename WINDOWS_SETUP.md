@@ -1,6 +1,6 @@
 # Windows setup and daily discovery
 
-Current discovery results and source evidence are in [QA_DISCOVERY_REPORT.md](QA_DISCOVERY_REPORT.md); PR #1 validation is preserved in [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md). The full suite passed on Windows Python 3.11.0 and 3.12.14; Python 3.12+ remains the documented target. Full tests use synthetic inputs and require no private profile. Real discovery still requires your private profile. No command submits applications.
+Current relevance results and source evidence are in [RELEVANCE_REVIEW.md](RELEVANCE_REVIEW.md); historical discovery is in [QA_DISCOVERY_REPORT.md](QA_DISCOVERY_REPORT.md); PR #1 validation is preserved in [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md). The full suite passed on Windows Python 3.11.0 and 3.12.14; Python 3.12+ remains the documented target. Full tests use synthetic inputs and require no private profile. Real discovery still requires your private profile. No command submits applications.
 
 ## 1. Prerequisites and private files
 

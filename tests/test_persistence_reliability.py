@@ -23,7 +23,7 @@ def test_cross_source_identity_survives_changed_content(tmp_path,job):
         session.add_all([a,b]);session.flush()
         first,new=upsert_job(session,job,a)
         assert new
-        other=job.model_copy(update={'platform':'ashby','source_id':'mock-2','url':HttpUrl('https://example.org/2')})
+        other=job.model_copy(update={'platform':'ashby','source_id':'mock-2','url':HttpUrl('https://example.org/1?utm_source=alias')})
         merged,new=upsert_job(session,other,b)
         assert not new and merged.id==first.id
         changed=other.model_copy(update={'title':'Senior QA Engineer','location':'Remote','url':HttpUrl('https://example.org/changed')})
@@ -59,6 +59,7 @@ def test_database_error_does_not_poison_next_board(tmp_path,job,monkeypatch):
     assert totals['failed_boards']==1 and totals['committed_boards']==1
     assert totals['normalized']==2 and totals['rolled_back_normalized']==1
     assert totals['relevant']==1 and totals['new']==1
+    assert totals['unique_records']==1
     with db() as session:
         assert len(list(session.scalars(select(JobRow))))==1
         match=session.scalar(select(MatchRow))

@@ -109,4 +109,8 @@ def database(url=None):
     def sqlite_options(connection, record):
         connection.execute('PRAGMA foreign_keys=ON')
     Base.metadata.create_all(engine)
-    return sessionmaker(engine, expire_on_commit=False)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    from agent.identity_repair import repair_grouped_jobs
+    with factory.begin() as session:
+        repair_grouped_jobs(session)
+    return factory
