@@ -356,6 +356,49 @@ def test_application_preferences_load_only_from_private_path(tmp_path):
     assert loaded.salary_expectation == '5,200 TEST/month'
 
 
+def test_existing_application_preferences_remain_backward_compatible(tmp_path):
+    private=tmp_path/'private'
+    private.mkdir()
+    path=private/'application_preferences.json'
+    path.write_text('{"current_residence_country":"Moldova"}',encoding='utf-8')
+    loaded=load_application_preferences(tmp_path)
+    assert loaded.current_residence_country=='Moldova'
+    assert loaded.geographic_search is None
+
+
+def test_geographic_search_preferences_validate_without_assuming_us_authorization(tmp_path):
+    private=tmp_path/'private'
+    private.mkdir()
+    path=private/'application_preferences.json'
+    path.write_text(ApplicationPreferences(
+        current_residence_city='Chișinău',
+        current_residence_country='Moldova',
+        preferred_job_location_romania='București (Bucharest)',
+        preferred_job_location_moldova='Chișinău',
+        geographic_search={
+            'preferred_work_arrangement':'Remote while residing in current country',
+            'willing_to_relocate':True,
+            'relocation_scope':['Romania','European Union'],
+            'relocation_only_for_attractive_offer':True,
+            'eu_work_authorization_confirmed':True,
+            'us_work_authorization':'Unknown',
+            'priority_order':[
+                'confirmed_remote_from_moldova',
+                'international_remote_moldova_unconfirmed',
+                'moldova_based',
+                'remote_requiring_romania_or_eu_residence',
+                'eu_hybrid_or_onsite',
+                'us_international_remote_or_b2b',
+            ],
+        },
+    ).model_dump_json(),encoding='utf-8')
+    loaded=load_application_preferences(tmp_path)
+    assert loaded.geographic_search is not None
+    assert loaded.geographic_search.eu_work_authorization_confirmed
+    assert loaded.geographic_search.us_work_authorization=='Unknown'
+    assert loaded.geographic_search.priority_order[0]=='confirmed_remote_from_moldova'
+
+
 def test_greenhouse_mock_form_verifies_names_and_uploads_cv(tmp_path, candidate):
     cv = tmp_path / 'synthetic-cv.pdf'
     cv.write_bytes(b'%PDF-1.4 synthetic fixture')
