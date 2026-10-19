@@ -12,13 +12,13 @@ From the dashboard, select Bitdefender vacancy ID 4, confirm it is Shortlisted, 
 .\.venv313\Scripts\python.exe -m agent.application_workflow --job-id 4 --headed
 ```
 
-The browser remains open for inspection until it is closed. A local private preview is saved at `private/application_runs/job-4/application_preview.json`, with its screenshot beside it. These generated artifacts are excluded from Git.
+The browser remains open for inspection until it is closed. A local private preview is saved at `private/application_runs/job-4/application_preview.json`, with its screenshot beside it. These generated artifacts are excluded from Git. Candidate-confirmed form preferences are loaded from the Git-ignored `private/application_preferences.json`; keep that file local.
 
 ## Field handling and safety
 
-Greenhouse text fields, dropdowns, radio controls, checkboxes and resume file inputs have explicit typed mapping support. The live pilot fills first name, last name, email, country, phone and city from verified profile facts, then attaches the tailored PDF. Preferred first name is left blank for candidate input because a preferred name is not separately confirmed. The supported mapping is intentionally narrow; no field is filled from a job-description prompt or guessed answer.
+Greenhouse text fields, dropdowns, radio controls, checkboxes and resume file inputs have explicit typed mapping support. The workflow reads candidate-confirmed name, preferred name, residence and salary preferences from the Git-ignored `private/application_preferences.json`. It verifies text values in the live DOM and attaches the tailored PDF.
 
-Work-authorization declarations, salary expectations, data-processing consent and any unknown employer questions are left unanswered and listed in the preview. Bitdefender’s location is Bucharest while Moldova-based remote eligibility is not explicit, so preparation is provisional and the employer must confirm eligibility. Romanian work authorization alone is not treated as proof of permission to work remotely from Moldova.
+Location mapping follows the field wording: current-city and residence fields use the configured private residence; explicitly preferred job locations use the preference for the stated country. A generic `Location (City)` field is ambiguous and remains blank for candidate review. A confirmed salary preference is entered as configured. Work-authorization declarations and data-processing consent remain unanswered and listed in the preview. Bitdefender’s location is Bucharest while Moldova-based remote eligibility is not explicit, so preparation is provisional and the employer must confirm eligibility. Romanian work authorization alone is not treated as proof of permission to work remotely from Moldova.
 
 The final submit button is disabled and a capture-phase handler blocks form submission, including keyboard submission. No submission action exists in this phase. Do not manually re-enable or bypass the guard. CAPTCHA, bot protection, login challenges, redirects outside official Greenhouse hosts, and unrecognized controls stop automation for manual review. LinkedIn hosts and forms are not supported.
 

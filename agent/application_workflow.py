@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote, urlparse
 
+from pydantic import BaseModel, ConfigDict, ValidationError
+
 from sqlalchemy.engine import make_url
 
 from agent.models import Candidate, Job
@@ -46,13 +48,24 @@ class PreparationResult:
     preview_path: str
 
 
+class ApplicationPreferences(BaseModel):
+    """Candidate-confirmed employer-form preferences, loaded only from private storage."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    first_name: str | None = None
+    last_name: str | None = None
+    preferred_first_name: str | None = None
+    current_residence_city: str | None = None
+    current_residence_country: str | None = None
+    preferred_job_location_romania: str | None = None
+    preferred_job_location_moldova: str | None = None
+    salary_expectation: str | None = None
+
+
 REVIEW_FIELDS = (
-    ('Preferred First Name',
-     'A preferred name is not separately confirmed in the private profile.'),
     ('Are you legally authorized to work in the country where the role is based at?',
-     'Requires an explicit candidate answer; Romanian work authorization does not confirm Moldova-based remote eligibility.'),
-    ('What are your net salary expectations for this role (in local currency)?',
-     'No verified amount or candidate instruction is available.'),
+     'Requires the candidate to answer explicitly; do not infer remote or country eligibility.'),
     ('Recruitment data-processing consent',
      'Requires the candidate to review and decide consent.'),
 )
@@ -125,22 +138,66 @@ def _city_country(location: str) -> tuple[str, str]:
     return parts[0], parts[-1]
 
 
-def map_verified_fields(candidate: Candidate) -> dict[str, str]:
-    """Return only fields supported by explicit profile data; leave legal/salary/consent out."""
-    first, last = _name_parts(candidate.name)
-    city, country = _city_country(candidate.location)
-    required = {'name': candidate.name, 'email': candidate.email,
-                'telephone': candidate.telephone, 'location': candidate.location}
+def load_application_preferences(root: Path = ROOT) -> ApplicationPreferences:
+    """Load explicit field preferences from the Git-ignored private directory."""
+    path = root / 'private' / 'application_preferences.json'
+    if not path.exists():
+        return ApplicationPreferences()
+    try:
+        return ApplicationPreferences.model_validate_json(path.read_text(encoding='utf-8-sig'))
+    except (OSError, UnicodeError, ValidationError):
+        raise ApplicationPreparationError(
+            'Private application preferences are unreadable or invalid; review application_preferences.json.'
+        ) from None
+
+
+def map_verified_fields(candidate: Candidate,
+                        preferences: ApplicationPreferences | None = None) -> dict[str, str]:
+    """Map candidate facts and confirmed preferences; legal answers remain excluded."""
+    preferences = preferences or ApplicationPreferences()
+    candidate_first, candidate_last = _name_parts(candidate.name)
+    fallback_city, fallback_country = _city_country(candidate.location)
+    first = (preferences.first_name or candidate_first).strip()
+    last = (preferences.last_name or candidate_last).strip()
+    city = (preferences.current_residence_city or fallback_city).strip()
+    country = (preferences.current_residence_country or fallback_country).strip()
+    required = {'name': first + ' ' + last, 'email': candidate.email,
+                'telephone': candidate.telephone, 'city': city, 'country': country}
     if any(not value.strip() or value == 'unknown' for value in required.values()):
-        raise ApplicationPreparationError('The private profile is missing a verified name, email, phone, or city/country.')
+        raise ApplicationPreparationError('The private profile or preferences are missing a verified name, email, phone, or residence.')
     return {
         'first_name': first,
         'last_name': last,
+        'preferred_first_name': (preferences.preferred_first_name or '').strip(),
         'email': candidate.email.strip(),
         'country': country,
         'phone': candidate.telephone.strip(),
-        'city': city,
+        'current_residence_city': city,
+        'current_residence': f'{city}, {country}',
+        'preferred_job_location_romania': (preferences.preferred_job_location_romania or '').strip(),
+        'preferred_job_location_moldova': (preferences.preferred_job_location_moldova or '').strip(),
+        'salary_expectation': (preferences.salary_expectation or '').strip(),
     }
+
+
+def location_value_for_label(label: str, mapped: dict[str, str]) -> tuple[str | None, str | None]:
+    """Resolve location only when a form label clearly states whose location it requests."""
+    normalized = ' '.join(label.casefold().replace('*', '').split())
+    if 'preferred' in normalized and 'location' in normalized:
+        if 'romania' in normalized:
+            value = mapped.get('preferred_job_location_romania', '')
+            return (value or None, None if value else 'Romania job-location preference is not configured.')
+        if 'moldova' in normalized:
+            value = mapped.get('preferred_job_location_moldova', '')
+            return (value or None, None if value else 'Moldova job-location preference is not configured.')
+        return None, 'The preferred job-location country is not specified.'
+    if any(term in normalized for term in ('current city', 'residential city')):
+        return mapped.get('current_residence_city') or None, None
+    if any(term in normalized for term in ('current residence', 'residential address', 'current location')):
+        return mapped.get('current_residence') or None, None
+    if 'location' in normalized or normalized == 'city':
+        return None, 'The generic location field is ambiguous; confirm whether it asks for residence or preferred job location.'
+    return None, None
 
 
 def _private_paths(root: Path, job_id: int) -> tuple[Path, Path, Path]:
@@ -173,11 +230,61 @@ def _page_submit_guard_script() -> str:
     })();"""
 
 
-def _fill_label(page, locator: str, value: str) -> None:
-    target = page.locator(locator)
+def _fill_verified_text(target, locator_description: str, value: str) -> None:
     if target.count() != 1 or not target.is_visible():
-        raise ApplicationPreparationError('A supported Greenhouse field is missing or ambiguous: ' + locator)
+        raise ApplicationPreparationError('A supported Greenhouse field is missing or ambiguous: ' + locator_description)
     fill_supported_control(target, 'text', value)
+    try:
+        actual = target.input_value()
+        input_type = (target.get_attribute('type') or '').casefold()
+    except Exception:
+        raise ApplicationPreparationError('A supported Greenhouse text field could not be verified in the page DOM.') from None
+    matches = actual == value
+    if not matches and input_type == 'tel':
+        expected_digits = re.sub(r'\D', '', value)
+        actual_digits = re.sub(r'\D', '', actual)
+        matches = bool(expected_digits) and expected_digits == actual_digits
+    if not matches:
+        raise ApplicationPreparationError('A supported Greenhouse text field did not retain its verified value (' + locator_description + ').')
+
+
+def _fill_label(page, locator: str, value: str) -> None:
+    _fill_verified_text(page.locator(locator), locator, value)
+
+
+def _fill_location_fields(page, mapped: dict[str, str]) -> tuple[FieldResult, ...]:
+    """Fill only location controls whose labels state residence or preferred country."""
+    labels = page.locator('label')
+    results: list[FieldResult] = []
+    for index in range(labels.count()):
+        label = labels.nth(index)
+        label_text = ' '.join(label.inner_text().split())
+        value, note = location_value_for_label(label_text, mapped)
+        if value is None and note is None:
+            continue
+        display_label = label_text.rstrip('*') or 'Location field'
+        field_id = label.get_attribute('for')
+        if not field_id:
+            results.append(FieldResult(display_label, 'Needs candidate input',
+                                       note or 'The location field has no uniquely associated control.'))
+            continue
+        safe_id = field_id.replace('\\', '\\\\').replace('"', '\\"')
+        selector = f'[id="{safe_id}"]'
+        target = page.locator(selector)
+        if value is None:
+            results.append(FieldResult(display_label, 'Needs candidate input', note or 'Location meaning must be confirmed.'))
+            continue
+        try:
+            kind = target.evaluate('(el) => ({tag:el.tagName.toLowerCase(), type:(el.getAttribute("type") || "").toLowerCase()})')
+        except Exception:
+            kind = {}
+        if kind.get('tag') not in {'input', 'textarea'} or (kind.get('tag') == 'input' and kind.get('type') not in {'', 'text'}):
+            results.append(FieldResult(display_label, 'Needs candidate input',
+                                       'The location control type is not supported for safe automatic entry.'))
+            continue
+        _fill_verified_text(target, selector, value)
+        results.append(FieldResult(display_label, 'Completed'))
+    return tuple(results)
 
 
 def _select_country(page, country: str) -> None:
@@ -195,23 +302,33 @@ def _select_country(page, country: str) -> None:
     raise ApplicationPreparationError('Country suggestion could not be selected safely; finish this field manually.')
 
 
-def _fill_form(page, candidate: Candidate, cv_path: Path) -> tuple[FieldResult, ...]:
-    values = map_verified_fields(candidate)
+def _fill_form(page, candidate: Candidate, cv_path: Path,
+               preferences: ApplicationPreferences | None = None) -> tuple[FieldResult, ...]:
+    values = map_verified_fields(candidate, preferences)
     mappings = (
         ('First name', '#first_name', values['first_name']),
         ('Last name', '#last_name', values['last_name']),
+        ('Preferred First Name', '#preferred_name', values['preferred_first_name']),
         ('Email', '#email', values['email']),
     )
     completed: list[FieldResult] = []
     for label, selector, value in mappings:
+        if label == 'Preferred First Name' and not value:
+            continue
         _fill_label(page, selector, value)
         completed.append(FieldResult(label, 'Completed'))
     _select_country(page, values['country'])
     completed.append(FieldResult('Country', 'Completed'))
     _fill_label(page, '#phone', values['phone'])
     completed.append(FieldResult('Phone', 'Completed'))
-    _fill_label(page, '#candidate-location', values['city'])
-    completed.append(FieldResult('Location (City)', 'Completed'))
+
+    completed.extend(_fill_location_fields(page, values))
+
+    salary = values['salary_expectation']
+    if salary:
+        _fill_label(page, '#question_9299068101', salary)
+        completed.append(FieldResult('Salary expectations', 'Completed'))
+
     resume = page.locator('input[type="file"]#resume')
     if not cv_path.is_file() or resume.count() != 1:
         raise ApplicationPreparationError('The private tailored PDF or Greenhouse resume upload control is missing.')
@@ -240,7 +357,8 @@ def fill_supported_control(locator, control_type: str, value: str | bool | Path)
 class ApplicationFormAdapter(Protocol):
     platform: str
 
-    def fill(self, page, candidate: Candidate, cv_path: Path) -> tuple[FieldResult, ...]: ...
+    def fill(self, page, candidate: Candidate, cv_path: Path,
+             preferences: ApplicationPreferences | None = None) -> tuple[FieldResult, ...]: ...
 
 
 class GreenhouseAdapter:
@@ -248,8 +366,9 @@ class GreenhouseAdapter:
 
     platform = 'greenhouse'
 
-    def fill(self, page, candidate: Candidate, cv_path: Path) -> tuple[FieldResult, ...]:
-        return _fill_form(page, candidate, cv_path)
+    def fill(self, page, candidate: Candidate, cv_path: Path,
+             preferences: ApplicationPreferences | None = None) -> tuple[FieldResult, ...]:
+        return _fill_form(page, candidate, cv_path, preferences)
 
 
 ADAPTERS: dict[str, ApplicationFormAdapter] = {'greenhouse': GreenhouseAdapter()}
@@ -262,6 +381,7 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
     job = _load_shortlisted_job(job_id, root)
     _reject_explicitly_ineligible(job_id, root)
     candidate = profile() if root == ROOT else _load_profile(root)
+    preferences = load_application_preferences(root)
     cv_path = root / 'private' / 'application_pilot' / f'job-{job_id}-bitdefender-qa-engineer' / 'cv.pdf'
     # Job 4 is the only supported pilot, and its database URL is checked against metadata below.
     if job_id != 4 or job.company.casefold() != 'bitdefender':
@@ -306,7 +426,9 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
             raise ApplicationPreparationError('A security challenge is visible. Preparation stopped; complete it manually if appropriate.')
         try:
             adapter = ADAPTERS[job.platform.casefold()]
-            completed = adapter.fill(page, candidate, cv_path)
+            results = adapter.fill(page, candidate, cv_path, preferences)
+            completed = tuple(item for item in results if item.status in {'Completed', 'Uploaded'})
+            location_reviews = tuple(item for item in results if item.status == 'Needs candidate input')
         except Exception:
             # Never leave a partially filled session marked ready for review as complete.
             browser.close()
@@ -318,19 +440,19 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
         result = PreparationResult(job_id=job_id, employer=job.company, role=job.title,
             application_url=str(job.url), status='Awaiting approval',
             completed_fields=tuple(item.label for item in completed),
-            candidate_input_fields=tuple(item.label for item in fields_for_review),
+            candidate_input_fields=tuple(item.label for item in (*location_reviews, *fields_for_review)),
             preview_path=str(preview_path))
         _write_json(preview_path, {
             'job_id': job_id, 'employer': job.company, 'role': job.title,
             'application_url': str(job.url), 'status': result.status,
             'completed_fields': [asdict(item) for item in completed],
-            'candidate_input_fields': [asdict(item) for item in fields_for_review],
+            'candidate_input_fields': [asdict(item) for item in (*location_reviews, *fields_for_review)],
             'screenshot_path': str(preview_image),
             'final_submission': 'Blocked; no application was submitted.',
         })
         _write_json(state_path, {'status': result.status, 'job_id': job_id,
             'completed_fields': list(result.completed_fields),
-            'candidate_input_fields': [asdict(item) for item in fields_for_review],
+            'candidate_input_fields': [asdict(item) for item in (*location_reviews, *fields_for_review)],
             'application_url': str(job.url), 'preview_path': str(preview_path),
             'browser_open': bool(hold_browser)})
         if hold_browser:
@@ -342,7 +464,7 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
         browser.close()
         _write_json(state_path, {'status': 'Awaiting approval', 'job_id': job_id,
             'completed_fields': list(result.completed_fields),
-            'candidate_input_fields': [asdict(item) for item in fields_for_review],
+            'candidate_input_fields': [asdict(item) for item in (*location_reviews, *fields_for_review)],
             'application_url': str(job.url), 'preview_path': str(preview_path),
             'browser_open': False})
         return result
