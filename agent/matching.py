@@ -140,7 +140,25 @@ def rule_assessment(job, candidate):
     language_requirement = bool(re.search(r'(fluent|native|proficien|[bc][12]\b).{0,35}(english|romanian|german|french|spanish|italian)|(?:english|romanian|german|french|spanish|italian).{0,35}(fluent|native|proficien|[bc][12]\b)',text))
     if language_requirement:
         mandatory.append('Language proficiency requirement detected; candidate proficiency must be verified')
-    uncertain = bool(mandatory or missing or language_requirement or not seniority or 'sdet' in job.title.lower() or 'architect' in job.title.lower())
+    degree_requirement = bool(re.search(
+        r'\b(?:bachelor[’\']?s?|master[’\']?s?|doctoral|ph\.?d\.?|university)\b.{0,60}\b(?:degree|computer science|engineering)\b|\bdegree\s+in\s+(?:computer science|software engineering|engineering)\b',
+        text, re.I))
+    education_text = ' '.join(candidate.education).casefold()
+    education_terms = []
+    if re.search(r'\bbachelor', text, re.I):
+        education_terms.append('bachelor')
+    if re.search(r'\bmaster', text, re.I):
+        education_terms.append('master')
+    if re.search(r'\b(?:doctoral|ph\.?d\.?)', text, re.I):
+        education_terms.append('phd')
+    for subject in ('computer science', 'software engineering', 'engineering'):
+        if subject in text:
+            education_terms.append(subject)
+    education_unverified = degree_requirement and (
+        not education_text or any(term not in education_text for term in education_terms))
+    if education_unverified:
+        mandatory.append('Education requirement detected; candidate education is missing or does not verify the stated degree')
+    uncertain = bool(mandatory or missing or language_requirement or education_unverified or not seniority or 'sdet' in job.title.lower() or 'architect' in job.title.lower())
     return Assessment(technical=min(1,len(matching)/6), experience=1 if seniority else .4,
         additional=.5, matching_skills=matching, missing_skills=missing,
         mandatory_requirements=mandatory, uncertain_mandatory=uncertain,

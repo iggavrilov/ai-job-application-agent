@@ -15,6 +15,7 @@ class Candidate(BaseModel):
     skills: list[str]
     projects: list[str]
     certifications: list[str]
+    education: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)
     salary_expectations: str = 'unknown'
     citizenship: str = 'unknown'

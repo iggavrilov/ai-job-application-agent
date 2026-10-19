@@ -90,6 +90,31 @@ def test_geographic_priority_moldova_romania_eu_and_no_cyprus_category(candidate
     assert ranking_key(record(local),'Geographic priority') < ranking_key(record(romania),'Geographic priority')
 
 
+
+def test_unverified_degree_requirement_is_flagged_for_manual_review(candidate):
+    job = qa('Bucharest', description=(
+        "The ideal candidate should have: a bachelor's degree in Computer Science. "
+        'Three years of QA experience and Playwright testing.'
+    ))
+    result = evaluate(job, candidate, rules(), False)
+    assert result.professional_fit == 'Needs Review'
+    assert any('Education requirement detected' in item for item in result.mandatory_requirements)
+    assert result.eligibility == 'Needs Review'
+    assert result.in_main_recommendations
+
+
+def test_verified_education_avoids_absent_education_warning(candidate):
+    educated = candidate.model_copy(update={'education': ["Bachelor's degree in Computer Science"]})
+    job = qa('Bucharest', description=(
+        "The ideal candidate should have: a bachelor's degree in Computer Science. "
+        'Three years of QA experience and Playwright testing.'
+    ))
+    result = evaluate(job, educated, rules(), False)
+    assert not any('Education requirement detected' in item for item in result.mandatory_requirements)
+    unrelated = candidate.model_copy(update={'education': ['High school diploma']})
+    result = evaluate(job, unrelated, rules(), False)
+    assert any('Education requirement detected' in item for item in result.mandatory_requirements)
+
 def test_salary_does_not_change_either_axis(candidate):
     job=qa('Europe')
     original=evaluate(job,candidate,rules(),False)
