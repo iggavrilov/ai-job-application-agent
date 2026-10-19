@@ -13,10 +13,11 @@ import sqlite3
 import unicodedata
 import subprocess
 import sys
+import httpx
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal, Protocol
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urljoin
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -115,11 +116,12 @@ def _load_shortlisted_job(job_id: int, root: Path) -> Job:
         job = Job.model_validate_json(payload)
     except Exception:
         raise ApplicationPreparationError('The stored vacancy record is invalid.') from None
-    if job.platform.casefold() != 'greenhouse':
-        raise ApplicationPreparationError('Only Greenhouse applications are supported in this phase.')
+    platform = job.platform.casefold()
     parsed = urlparse(str(job.url))
-    if parsed.scheme != 'https' or parsed.hostname not in {'job-boards.eu.greenhouse.io', 'boards.greenhouse.io'}:
-        raise ApplicationPreparationError('The vacancy URL is outside the supported official Greenhouse hosts.')
+    allowed_hosts = ({'job-boards.eu.greenhouse.io', 'boards.greenhouse.io'} if platform == 'greenhouse'
+                     else {'jobs.lever.co'} if platform == 'lever' else set())
+    if parsed.scheme != 'https' or parsed.hostname not in allowed_hosts:
+        raise ApplicationPreparationError('The vacancy URL is outside the supported official Greenhouse/Lever hosts.')
     return job
 
 
@@ -136,10 +138,14 @@ def _reject_explicitly_ineligible(job_id: int, root: Path) -> None:
         return  # Old databases may not have a match snapshot; retain unknown as Needs Review.
     if row:
         try:
-            eligibility = json.loads(row[0]).get('eligibility')
+            payload = json.loads(row[0])
+            geographic = payload.get('geographic_assessment') or {}
+            eligibility = geographic.get('classification')
+            if not eligibility:
+                eligibility = 'Confirmed Ineligible' if payload.get('eligibility') == 'Ineligible' else None
         except (json.JSONDecodeError, AttributeError):
             eligibility = None
-        if eligibility == 'Ineligible':
+        if eligibility == 'Confirmed Ineligible':
             raise ApplicationPreparationError('Application preparation is disabled for an explicitly ineligible vacancy.')
 
 
@@ -538,7 +544,7 @@ class ApplicationFormAdapter(Protocol):
 
 
 class GreenhouseAdapter:
-    """Greenhouse implementation; Lever can be added without changing orchestration."""
+    """Greenhouse implementation with vacancy-specific confirmed answers."""
 
     platform = 'greenhouse'
 
@@ -548,7 +554,89 @@ class GreenhouseAdapter:
         return _fill_form(page, candidate, cv_path, preferences, answers)
 
 
-ADAPTERS: dict[str, ApplicationFormAdapter] = {'greenhouse': GreenhouseAdapter()}
+class LeverAdapter:
+    """Fill only uniquely labeled identity fields and an unambiguous resume upload."""
+
+    platform = 'lever'
+
+    def fill(self, page, candidate: Candidate, cv_path: Path,
+             preferences: ApplicationPreferences | None = None,
+             answers: VacancyApplicationAnswers | None = None) -> tuple[FieldResult, ...]:
+        parts = _name_parts(candidate.name)
+        verified = {
+            'name': candidate.name,
+            'full name': candidate.name,
+            'first name': parts[0],
+            'last name': parts[1],
+            'email': candidate.email if candidate.email != 'unknown' else '',
+            'phone': candidate.telephone if candidate.telephone != 'unknown' else '',
+            'phone number': candidate.telephone if candidate.telephone != 'unknown' else '',
+        }
+        results=[]
+        labels=page.locator('label')
+        for index in range(labels.count()):
+            label=labels.nth(index)
+            label_text=' '.join(label.inner_text().split()).strip().rstrip('*').strip()
+            key=label_text.casefold()
+            value=verified.get(key)
+            if not value or key not in verified:
+                continue
+            locator=page.get_by_label(label_text, exact=True)
+            if locator.count()!=1 or not locator.is_visible():
+                results.append(FieldResult(label_text,'Needs candidate input','Field is missing or ambiguous; no value was entered.'))
+                continue
+            actual=_fill_verified_text(locator,'Lever '+label_text,value)
+            results.append(FieldResult(label_text,'Completed','Verified value: '+actual))
+        file_inputs=page.locator('input[type="file"]')
+        file_count=file_inputs.count()
+        resume_matches=[]
+        for index in range(file_count):
+            control=file_inputs.nth(index)
+            metadata=' '.join(str(control.get_attribute(name) or '') for name in ('name','id','aria-label','accept')).casefold()
+            label_metadata=control.evaluate("el => Array.from(el.labels || []).map(x => x.innerText || '').join(' ').toLowerCase()")
+            metadata+=' '+str(label_metadata or '')
+            if re.search(r'\b(resume|cv|curriculum vitae)\b',metadata):
+                resume_matches.append(control)
+        chosen=resume_matches[0] if len(resume_matches)==1 else file_inputs.nth(0) if file_count==1 else None
+        if chosen is not None and cv_path.is_file():
+            fill_supported_control(chosen,'file',cv_path)
+            attached=chosen.evaluate('(el) => Array.from(el.files || []).map(file => ({name:file.name,size:file.size}))')
+            if len(attached)!=1 or attached[0].get('name')!=cv_path.name or attached[0].get('size')!=cv_path.stat().st_size:
+                raise ApplicationPreparationError('The Lever CV attachment could not be verified in the live DOM.')
+            results.append(FieldResult('Resume/CV','Uploaded',f"Verified attached file: {attached[0]['name']} ({attached[0]['size']} bytes)"))
+        elif file_count:
+            results.append(FieldResult('Resume/CV','Needs candidate input','Resume upload control is ambiguous; no file was attached.'))
+        else:
+            results.append(FieldResult('Resume/CV','Needs candidate input','No resume upload control was found.'))
+        # Never infer residence, work authorization, salary, legal declarations or consent.
+        snapshot=_form_dom_snapshot(page)
+        mapped_labels={item.label.casefold() for item in results}
+        for field in snapshot['fields']:
+            label=field.get('label') or 'Unlabeled required field'
+            key=' '.join(label.casefold().split())
+            if key in mapped_labels:
+                continue
+            if field.get('required') or re.search(r'\b(location|city|authorization|work eligibility|visa|salary|consent|privacy|legal|citizenship)\b',key):
+                results.append(FieldResult(label,'Needs candidate input','Unanswered field; Lever preparation does not infer or select this value.'))
+        return tuple(results)
+
+
+def _matching_private_cv(root: Path, job_id: int, application_url: str) -> Path:
+    private=root/'private'
+    for metadata_path in private.rglob('application_metadata.json') if private.exists() else []:
+        try:
+            metadata=json.loads(metadata_path.read_text(encoding='utf-8'))
+        except (OSError,json.JSONDecodeError):
+            continue
+        if metadata.get('job_id')==job_id and metadata.get('application_url')==application_url:
+            for filename in ('cv.pdf','tailored_cv.pdf','application_cv.pdf'):
+                candidate_path=metadata_path.parent/filename
+                if candidate_path.is_file():
+                    return candidate_path
+    raise ApplicationPreparationError('A private tailored CV with matching vacancy and application-URL metadata is required.')
+
+
+ADAPTERS: dict[str, ApplicationFormAdapter] = {'greenhouse': GreenhouseAdapter(), 'lever': LeverAdapter()}
 
 
 def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
@@ -693,6 +781,106 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
         return result
 
 
+
+def prepare_lever(job_id: int, *, root: Path = ROOT, headed: bool = True,
+                  hold_browser: bool = True) -> PreparationResult:
+    """Prepare supported Lever identity fields/CV only; legal and submission actions remain manual."""
+    root=root.resolve()
+    job=_load_shortlisted_job(job_id,root)
+    if job.platform.casefold()!='lever':
+        raise ApplicationPreparationError('Lever preparation requires a vacancy from the official Lever postings platform.')
+    candidate=profile() if root==ROOT else _load_profile(root)
+    cv_path=_matching_private_cv(root,job_id,str(job.url))
+    directory,preview_path,state_path=_private_paths(root,job_id)
+    directory.mkdir(parents=True,exist_ok=True)
+    if state_path.is_file():
+        try: state=json.loads(state_path.read_text(encoding='utf-8'))
+        except (OSError,json.JSONDecodeError): state={}
+        if state.get('status') in {'Submitting','Submitted','Submission Uncertain'}:
+            raise ApplicationPreparationError('A submission record exists; preparation is blocked pending manual reconciliation.')
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise ApplicationPreparationError('Playwright is not installed. Install project requirements before launching.') from None
+    from agent.collectors import check_robots
+    with httpx.Client(timeout=30,headers={'User-Agent':'QAJobAgent/0.1 (supervised application preparation)'},follow_redirects=False) as client:
+        final_url=str(job.url)
+        for _ in range(5):
+            check_robots(client,final_url,interval=1)
+            response=client.get(final_url,follow_redirects=False)
+            if response.is_redirect:
+                target=urlparse(urljoin(final_url,response.headers.get('location','')))
+                if target.scheme!='https' or target.hostname!='jobs.lever.co':
+                    raise ApplicationPreparationError('Lever redirected outside its official host; preparation stopped.')
+                final_url=target.geturl()
+                continue
+            if response.status_code>=400:
+                raise ApplicationPreparationError(f'The official Lever page returned HTTP {response.status_code}; preparation stopped.')
+            break
+        else:
+            raise ApplicationPreparationError('Too many redirects on the official Lever application page.')
+    preview_image=directory/'application_preview.png'
+    with sync_playwright() as playwright:
+        browser=playwright.chromium.launch(channel='msedge',headless=not headed)
+        page=browser.new_page(accept_downloads=False)
+        page.add_init_script(_page_submit_guard_script())
+        page.route('**/*',lambda route: route.abort() if route.request.is_navigation_request() and urlparse(route.request.url).hostname!='jobs.lever.co' else route.continue_())
+        response=page.goto(final_url,wait_until='domcontentloaded',timeout=60_000)
+        page.wait_for_timeout(1000)
+        if response is None or response.status>=400 or urlparse(page.url).hostname!='jobs.lever.co':
+            browser.close()
+            raise ApplicationPreparationError('The official Lever form did not load on its approved host.')
+        body=(page.evaluate('document.body ? document.body.innerText : ""') or '').casefold()
+        if not body.strip() or _access_challenge_detected(body):
+            browser.close()
+            raise ApplicationPreparationError('A security challenge or unreadable page is present; preparation stopped.')
+        results=ADAPTERS['lever'].fill(page,candidate,cv_path,load_application_preferences(root),None)
+        page.evaluate(_page_submit_guard_script())
+        submit_controls=page.locator('button[type="submit"],input[type="submit"]')
+        for index in range(submit_controls.count()):
+            if submit_controls.nth(index).is_enabled():
+                browser.close()
+                raise ApplicationPreparationError('The final submission control could not be disabled; preparation stopped.')
+        snapshot=_form_dom_snapshot(page)
+        page.screenshot(path=str(preview_image),full_page=True)
+        completed=tuple(item for item in results if item.status in {'Completed','Uploaded'})
+        reviews=tuple(item for item in results if item.status=='Needs candidate input')
+        status='Needs Review' if reviews else 'Prepared'
+        _write_json(preview_path,{'job_id':job_id,'employer':job.company,'role':job.title,'application_url':str(job.url),
+            'status':status,'completed_fields':[asdict(item) for item in completed],
+            'candidate_input_fields':[asdict(item) for item in reviews],'form_snapshot':snapshot,
+            'screenshot_path':str(preview_image),'final_submission':'Not attempted; Lever submission is not enabled.'})
+        _write_json(state_path,{'status':status,'job_id':job_id,'application_url':str(job.url),
+            'completed_fields':[item.label for item in completed],
+            'candidate_input_fields':[asdict(item) for item in reviews],'preview_path':str(preview_path),
+            'browser_open':bool(hold_browser),'submission_enabled':False})
+        if hold_browser:
+            while not page.is_closed():
+                try: page.wait_for_timeout(500)
+                except Exception: break
+        browser.close()
+        _write_json(state_path,{'status':status,'job_id':job_id,'application_url':str(job.url),
+            'completed_fields':[item.label for item in completed],
+            'candidate_input_fields':[asdict(item) for item in reviews],'preview_path':str(preview_path),
+            'browser_open':False,'submission_enabled':False})
+        return PreparationResult(job_id=job_id,employer=job.company,role=job.title,application_url=str(job.url),
+            status=status,completed_fields=tuple(item.label for item in completed),
+            candidate_input_fields=tuple(item.label for item in reviews),preview_path=str(preview_path))
+
+
+def _launch_lever_from_dashboard(job_id: int, root: Path = ROOT) -> None:
+    job=_load_shortlisted_job(job_id,root)
+    if job.platform.casefold()!='lever':
+        raise ApplicationPreparationError('Selected vacancy is not an official Lever posting.')
+    _matching_private_cv(root,job_id,str(job.url))
+    directory,preview_path,state_path=_private_paths(root,job_id)
+    directory.mkdir(parents=True,exist_ok=True)
+    _write_json(state_path,{'status':'Prepared','job_id':job_id,'completed_fields':[],
+        'candidate_input_fields':[],'application_url':str(job.url),'preview_path':str(preview_path),
+        'browser_open':True,'submission_enabled':False})
+    subprocess.Popen([sys.executable,'-m','agent.application_workflow','--job-id',str(job_id),
+        '--platform','lever','--headed'],cwd=str(root),close_fds=True)
+
 def _load_profile(root: Path) -> Candidate:
     from pydantic import ValidationError
     path = root / 'candidate_profile.json'
@@ -730,11 +918,14 @@ def _launch_from_dashboard(job_id: int, root: Path = ROOT) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description='Prepare a Shortlisted Greenhouse application for supervised review.')
     parser.add_argument('--job-id', type=int, required=True)
+    parser.add_argument('--platform', choices=['greenhouse','lever'], default='greenhouse')
     parser.add_argument('--headed', action='store_true', help='Open the employer form in a visible Edge window (default).')
     parser.add_argument('--headless', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
-        result = prepare_greenhouse(args.job_id, headed=not args.headless, hold_browser=True)
+        result = (prepare_lever(args.job_id, headed=not args.headless, hold_browser=True)
+                  if args.platform == 'lever' else
+                  prepare_greenhouse(args.job_id, headed=not args.headless, hold_browser=True))
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     except Exception as exc:
         _, _, state_path = _private_paths(ROOT, args.job_id)

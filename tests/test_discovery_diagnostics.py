@@ -93,6 +93,35 @@ def test_diagnostics_reconcile_persist_and_deduplicate(tmp_path, monkeypatch):
         assert json.loads(reports[1].payload)==second['diagnostics']
 
 
+def test_filtered_refresh_supersedes_stale_recommendation_and_preserves_status(tmp_path,monkeypatch):
+    import agent.discovery as discovery
+    factory=database('sqlite:///'+str(tmp_path/'filtered-refresh.db'))
+    monkeypatch.setattr(discovery,'database',lambda:factory)
+    monkeypatch.setattr(discovery,'load_boards',lambda:([{
+        'company':'Synthetic','platform':'lever','board':'synthetic','enabled':True}],[]))
+    jobs=CollectedJobs()
+    jobs.append(posting('QA Engineer','stable-id'))
+    monkeypatch.setattr(discovery,'collect',lambda *args:jobs)
+    first=discovery.discover(False)
+    assert first['status']=='Success'
+    with factory.begin() as session:
+        row=session.scalar(select(JobRow))
+        row.status='Shortlisted'
+    jobs.clear()
+    jobs.append(posting('Product Designer','stable-id'))
+    second=discovery.discover(False)
+    assert second['diagnostics']['boards'][0]['previously_persisted_exclusions']==1
+    with factory() as session:
+        row=session.scalar(select(JobRow))
+        latest=session.scalar(select(MatchRow).where(MatchRow.job_id==row.id).order_by(MatchRow.id.desc()))
+        match=json.loads(latest.payload)
+        assert row.status=='Shortlisted'
+        assert match['recommendation']=='Not Recommended'
+        assert match['in_main_recommendations'] is False
+        assert match['discovery_filter_reason']=='no_qa_title_keyword'
+        assert match['geographic_assessment']['classification']
+
+
 def test_failed_collection_has_unknown_counts(tmp_path, monkeypatch):
     import agent.discovery as discovery
     factory=database('sqlite:///' + str(tmp_path/'failed.db'))

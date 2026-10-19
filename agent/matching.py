@@ -57,6 +57,8 @@ def region(location):
         return 'Romania'
     if countries & set(EU) or re.search(r'\b(eu|europe|european union)\b',text):
         return 'European Union / Europe'
+    if re.search(r'\b(united states|usa|u\.s\.|america)\b', text):
+        return 'United States'
     if re.search(r'\b(remote|worldwide|global|anywhere|international)\b',text):
         return 'International remote / unspecified'
     return 'Other / unknown'
@@ -182,6 +184,24 @@ def score_parts(assessment, geo, config):
 
 def evaluate(job, candidate, config, use_ai=True):
     geo, reason = geography(job,candidate)
+    from agent.eligibility import assess_geographic_eligibility
+    geographic_assessment = assess_geographic_eligibility(job, candidate)
+    # Geography is classified separately from professional fit. Preserve legacy
+    # exclusions unless verified candidate facts establish an EU relocation path
+    # or the posting explicitly accepts international contractors/sponsorship.
+    target_words = ' '.join([job.location, job.title, *geographic_assessment.required_residence_countries,
+                             *geographic_assessment.remote_permitted_locations]).casefold()
+    target_eu_scope = bool(re.search(r'\b(eu|europe|european union|emea|romania|bucharest|bucuresti|germany|france|poland|netherlands)\b', target_words))
+    eu_relocation_path = (geographic_assessment.classification == 'Eligible If Relocating'
+                          and geographic_assessment.eu_work_authorization == 'Confirmed for all EU member states'
+                          and target_eu_scope)
+    international_path = (geographic_assessment.classification != 'Confirmed Ineligible' and
+                          ('explicitly accepted' in geographic_assessment.contractor_eligibility.casefold()
+                           or geographic_assessment.visa_sponsorship.startswith('Yes')))
+    if geo == 'Ineligible' and not eu_relocation_path and not international_path and geographic_assessment.classification != 'Confirmed Ineligible':
+        geographic_assessment = geographic_assessment.model_copy(update={
+            'classification':'Confirmed Ineligible', 'confidence':'High',
+            'evidence':[*geographic_assessment.evidence, reason or 'The legacy location assessment identifies an explicit outside-scope restriction.']})
     assessment = rule_assessment(job,candidate)
     method = 'rules'
     if use_ai and os.getenv('OPENAI_API_KEY'):
@@ -207,8 +227,10 @@ def evaluate(job, candidate, config, use_ai=True):
     exclusions = []
     if not relevant(job,config):
         exclusions.append('Title or software-testing relevance is outside the search rules.')
-    if geo == 'Ineligible':
+    if geo == 'Ineligible' and not eu_relocation_path and not international_path:
         exclusions.append(reason)
+    if geographic_assessment.classification == 'Confirmed Ineligible' and reason not in exclusions:
+        exclusions.extend(geographic_assessment.evidence[-1:] or ['Explicit location or authorization evidence conflicts with the candidate’s current facts.'])
     if professional_fit == 'Not Recommended':
         exclusions.append(professional_reason)
     if exclusions:
@@ -222,4 +244,5 @@ def evaluate(job, candidate, config, use_ai=True):
       recommendation=recommendation, method=method, professional_score=professional_score,
       professional_fit=professional_fit, professional_reason=professional_reason,
       geographic_reason=reason, geographic_priority=geographic_priority(job,geo,EU),
+      geographic_assessment=geographic_assessment,
       in_main_recommendations=not exclusions, exclusion_reasons=exclusions)
