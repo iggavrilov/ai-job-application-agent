@@ -114,3 +114,32 @@ def database(url=None):
     with factory.begin() as session:
         repair_grouped_jobs(session)
     return factory
+
+
+class ManualImportLead(Base):
+    """Sanitized user-supplied lead metadata; raw alerts and email content are never stored."""
+    __tablename__ = 'manual_import_leads'
+    id = Column(Integer, primary_key=True)
+    linkedin_url = Column(String, unique=True, nullable=False)
+    title = Column(String, default='Needs manual identification')
+    company = Column(String, default='Needs manual identification')
+    location = Column(String, default='Unknown')
+    employer_application_url = Column(String)
+    status = Column(String, default='Needs Official Verification')
+    matched_job_id = Column(Integer, ForeignKey('jobs.id'))
+    created = Column(String, default=now)
+
+
+class JobSourceStatus(Base):
+    """Additive source lifecycle history; missing from a feed never deletes a vacancy."""
+    __tablename__ = 'job_source_status'
+    id = Column(Integer, primary_key=True)
+    job_id = Column(Integer, ForeignKey('jobs.id'), nullable=False)
+    source_id = Column(Integer, ForeignKey('job_sources.id'), nullable=False)
+    status = Column(String, default='Observed in latest source feed')
+    last_seen = Column(String, default=now)
+    last_checked = Column(String, default=now)
+    expires_at = Column(String)
+    evidence_url = Column(String)
+    note = Column(Text, default='')
+    __table_args__ = (UniqueConstraint('job_id', 'source_id'),)

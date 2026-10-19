@@ -1,0 +1,615 @@
+version: 1
+sources:
+- id: arbeitnow
+  name: Arbeitnow
+  category: Europe
+  source_type: aggregator
+  official_url: https://www.arbeitnow.com/api/job-board-api
+  api_url: https://www.arbeitnow.com/api/job-board-api?page=1
+  coverage:
+  - EU
+  - Europe
+  public_api: true
+  authentication: None
+  permitted_access: robots-checked documented paginated JSON API; retain Arbeitnow
+    link and attribution
+  rate_limit: API requests at least 1 second apart; provider says not to abuse; stop
+    on 429
+  status: integrated
+  evidence_url: https://blog.arbeitnow.com/blog/job-board-api
+  terms_url: https://www.arbeitnow.com/terms
+  last_successful_check: null
+  last_error: No successful scan recorded yet
+  enabled: true
+  max_pages: 100
+- id: remoteok
+  name: Remote OK
+  category: Remote / international
+  source_type: aggregator
+  official_url: https://remoteok.com/remote-api
+  api_url: https://remoteok.com/api
+  coverage:
+  - Worldwide
+  - EU
+  - Moldova
+  - Romania
+  - United States
+  public_api: true
+  authentication: None
+  permitted_access: robots-checked documented public JSON feed; display Remote OK
+    attribution and a followable posting link
+  rate_limit: No numeric limit documented; one request per discovery run; stop on
+    429
+  status: integrated
+  evidence_url: https://remoteok.com/faq
+  terms_url: https://remoteok.com/legal
+  last_successful_check: null
+  last_error: No successful scan recorded yet
+  enabled: true
+- id: himalayas
+  name: Himalayas
+  category: Remote / international
+  source_type: aggregator
+  official_url: https://himalayas.app/docs/remote-jobs-api
+  api_url: https://himalayas.app/jobs/api?limit=20
+  coverage:
+  - Worldwide
+  - EU
+  - Moldova
+  - Romania
+  - United States
+  public_api: true
+  authentication: Optional API key for higher limits; this project uses unauthenticated
+    public access only
+  permitted_access: robots-checked full-feed cursor pagination; use the provider applicationLink
+    for Apply and retain Himalayas attribution
+  rate_limit: Public allowance is shared and unspecified; two seconds between pages;
+    stop at safety cap or HTTP 429
+  status: integrated
+  evidence_url: https://himalayas.app/docs/ai-agents
+  terms_url: https://himalayas.app/terms
+  last_successful_check: null
+  last_error: No successful scan recorded yet
+  enabled: true
+  max_pages: 50
+- id: remotive
+  name: Remotive
+  category: Remote / international
+  source_type: aggregator
+  official_url: https://remotive.com/remote-jobs/api
+  api_url: https://remotive.com/api/remote-jobs?search=QA
+  coverage:
+  - Worldwide
+  - EU
+  - Moldova
+  - Romania
+  - United States
+  public_api: true
+  authentication: None for public feed
+  permitted_access: research only until usage scope and attribution requirements are
+    reviewed; do not ingest in this release
+  rate_limit: Not established for local database use; public feed is delayed by 24
+    hours
+  status: research_only
+  evidence_url: https://remotive.com/remote-jobs/api
+  terms_url: https://remotive.com/terms-of-use
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: greenhouse
+  name: Greenhouse employer job boards
+  category: Official ATS
+  source_type: ats
+  official_url: https://developers.greenhouse.io/job-board.html
+  coverage:
+  - Employer board-specific
+  public_api: true
+  authentication: None for public boards
+  permitted_access: Existing verified employer board IDs; documented public Board
+    API; robots checks per board
+  rate_limit: One-second default interval; stop on HTTP 429
+  status: integrated
+  evidence_url: https://developers.greenhouse.io/job-board.html
+  last_successful_check: null
+  last_error: No successful scan recorded yet
+- id: lever
+  name: Lever employer job boards
+  category: Official ATS
+  source_type: ats
+  official_url: https://github.com/lever/postings-api
+  coverage:
+  - Employer board-specific
+  public_api: true
+  authentication: None for public postings
+  permitted_access: Existing verified employer board IDs; official public postings
+    API; robots checks per board
+  rate_limit: One-second default interval; stop on HTTP 429
+  status: integrated
+  evidence_url: https://github.com/lever/postings-api
+  last_successful_check: null
+  last_error: No successful scan recorded yet
+- id: ashby
+  name: Ashby employer job boards
+  category: Official ATS
+  source_type: ats
+  official_url: https://developers.ashbyhq.com/docs/public-job-posting-api
+  coverage:
+  - Employer board-specific
+  public_api: true
+  authentication: None for public job boards
+  permitted_access: Adapter exists; activate only exact board IDs exposed by official
+    employer careers pages and allowed by robots
+  rate_limit: One-second default interval; stop on HTTP 429
+  status: adapter_only_no_verified_boards
+  evidence_url: https://developers.ashbyhq.com/docs/public-job-posting-api
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: workday
+  name: Workday careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://www.workday.com/en-us/products/talent-management/recruiting.html
+  coverage:
+  - Employer board-specific
+  public_api: unknown
+  authentication: Employer-specific
+  permitted_access: Research only; no generic documented public jobs API enabled
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: smartrecruiters
+  name: SmartRecruiters careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://developers.smartrecruiters.com/
+  coverage:
+  - Employer board-specific
+  public_api: documented API exists; public employer-board use not enabled
+  authentication: Verify per public posting endpoint
+  permitted_access: Research only; no employer board activated
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: teamtailor
+  name: Teamtailor careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://docs.teamtailor.com/
+  coverage:
+  - Employer board-specific
+  public_api: API documentation available
+  authentication: API key for API
+  permitted_access: Research only; do not use authenticated endpoints without candidate/employer
+    authorization
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: recruitee
+  name: Recruitee careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://docs.recruitee.com/reference/offers
+  coverage:
+  - Employer board-specific
+  public_api: documented API
+  authentication: Verify per endpoint
+  permitted_access: Research only; no employer board activated
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: bamboohr
+  name: BambooHR careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://documentation.bamboohr.com/
+  coverage:
+  - Employer board-specific
+  public_api: Employer-specific
+  authentication: Employer-specific
+  permitted_access: Research only; no generic public vacancy API enabled
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: personio
+  name: Personio careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://developer.personio.de/
+  coverage:
+  - Employer board-specific
+  public_api: Employer-specific
+  authentication: OAuth/API credentials generally required
+  permitted_access: Research only; do not use credentials or private endpoints
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: icims
+  name: iCIMS careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://developer.icims.com/
+  coverage:
+  - Employer board-specific
+  public_api: Employer-specific
+  authentication: Employer-specific
+  permitted_access: Research only; no public integration enabled
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: oracle_recruiting
+  name: Oracle Recruiting careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://docs.oracle.com/en/cloud/saas/talent-management/
+  coverage:
+  - Employer board-specific
+  public_api: Employer-specific
+  authentication: Employer-specific
+  permitted_access: Research only; no generic public vacancy API enabled
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: sap_successfactors
+  name: SAP SuccessFactors careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://help.sap.com/docs/SAP_SUCCESSFACTORS_PLATFORM
+  coverage:
+  - Employer board-specific
+  public_api: Employer-specific
+  authentication: Employer-specific
+  permitted_access: Research only; no generic public vacancy API enabled
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: workable
+  name: Workable careers
+  category: Official ATS
+  source_type: ats
+  official_url: https://workable.readme.io/reference
+  coverage:
+  - Employer board-specific
+  public_api: Documented API
+  authentication: API token for most endpoints
+  permitted_access: Research only; no credentialed endpoints configured
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: eures
+  name: EURES
+  category: EU
+  source_type: public_job_board
+  official_url: https://eures.europa.eu/index_en
+  coverage:
+  - EU
+  - EEA
+  public_api: Not established
+  authentication: Search pages may require an account for some features
+  permitted_access: Research only; no automated access until public API and robots
+    policy are verified
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: just_join_it
+  name: Just Join IT
+  category: EU
+  source_type: public_job_board
+  official_url: https://justjoin.it/
+  coverage:
+  - Poland
+  - EU
+  public_api: Not established
+  authentication: Public listing pages
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: no_fluff_jobs
+  name: No Fluff Jobs
+  category: EU
+  source_type: public_job_board
+  official_url: https://nofluffjobs.com/
+  coverage:
+  - EU
+  public_api: Not established
+  authentication: Public listing pages
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: landing_jobs
+  name: Landing.jobs
+  category: EU
+  source_type: public_job_board
+  official_url: https://landing.jobs/
+  coverage:
+  - Portugal
+  - EU
+  public_api: Not established
+  authentication: Public listing pages
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: welcome_to_the_jungle
+  name: Welcome to the Jungle
+  category: EU
+  source_type: public_job_board
+  official_url: https://www.welcometothejungle.com/en
+  coverage:
+  - EU
+  public_api: Not established
+  authentication: Public listing pages
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: eurotechjobs
+  name: EuroTechJobs
+  category: EU
+  source_type: public_job_board
+  official_url: https://www.eurotechjobs.com/
+  coverage:
+  - EU
+  public_api: Not established
+  authentication: Public listing pages
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: ejobs_ro
+  name: eJobs Romania
+  category: Romania
+  source_type: public_job_board
+  official_url: https://www.ejobs.ro/
+  coverage:
+  - Romania
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: bestjobs_ro
+  name: BestJobs Romania
+  category: Romania
+  source_type: public_job_board
+  official_url: https://www.bestjobs.eu/
+  coverage:
+  - Romania
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: hipo_ro
+  name: Hipo Romania
+  category: Romania
+  source_type: public_job_board
+  official_url: https://www.hipo.ro/
+  coverage:
+  - Romania
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: devjob_ro
+  name: DevJob.ro
+  category: Romania
+  source_type: public_job_board
+  official_url: https://devjob.ro/
+  coverage:
+  - Romania
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: rabota_md
+  name: Rabota.md
+  category: Moldova
+  source_type: public_job_board
+  official_url: https://www.rabota.md/
+  coverage:
+  - Moldova
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: delucru_md
+  name: Delucru.md
+  category: Moldova
+  source_type: public_job_board
+  official_url: https://www.delucru.md/
+  coverage:
+  - Moldova
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: joblist_md
+  name: Joblist.md
+  category: Moldova
+  source_type: public_job_board
+  official_url: https://joblist.md/
+  coverage:
+  - Moldova
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: work_we_remotely
+  name: We Work Remotely
+  category: Remote / international
+  source_type: public_job_board
+  official_url: https://weworkremotely.com/
+  coverage:
+  - Worldwide
+  - EU
+  - United States
+  public_api: RSS available; permitted use not assessed
+  authentication: Public pages
+  permitted_access: Research only; review feed terms and robots before integration
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: wellfound
+  name: Wellfound
+  category: Remote / international
+  source_type: public_job_board
+  official_url: https://wellfound.com/jobs
+  coverage:
+  - Worldwide
+  - EU
+  - United States
+  public_api: Not established
+  authentication: Sign-in may be required
+  permitted_access: Research only; no login or automated access
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: jobgether
+  name: Jobgether
+  category: Remote / international
+  source_type: public_job_board
+  official_url: https://jobgether.com/
+  coverage:
+  - Worldwide
+  - EU
+  - United States
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: builtin
+  name: Built In
+  category: United States
+  source_type: public_job_board
+  official_url: https://builtin.com/jobs
+  coverage:
+  - United States
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: dice
+  name: Dice
+  category: United States
+  source_type: public_job_board
+  official_url: https://www.dice.com/jobs
+  coverage:
+  - United States
+  public_api: Not established
+  authentication: Public listings
+  permitted_access: Research only; robots and terms review required
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: indeed
+  name: Indeed
+  category: United States
+  source_type: public_job_board
+  official_url: https://www.indeed.com/
+  coverage:
+  - United States
+  - EU
+  public_api: No public job-search API established for this project
+  authentication: Account may be needed for some features
+  permitted_access: Research only; no login, scraping or blocked-endpoint access
+  rate_limit: Not assessed
+  status: research_only
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: official_employer_sites
+  name: Official US employer careers pages
+  category: United States
+  source_type: official_employer_careers
+  official_url: https://www.usa.gov/job-search
+  coverage:
+  - United States
+  - international contractors
+  public_api: Employer-specific
+  authentication: Employer-specific
+  permitted_access: Use exact employer career sources and public APIs only; no guessed
+    ATS identifiers
+  rate_limit: Per employer source policy
+  status: integrated_via_verified_ats_boards
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: working_nomads
+  name: Working Nomads
+  category: Remote / international
+  source_type: public_job_board
+  official_url: https://www.workingnomads.com/jobs
+  coverage:
+  - Worldwide
+  - EU
+  - United States
+  public_api: Not established for this project
+  authentication: Public listings; account features not used
+  permitted_access: Research only until API/feed, robots policy, terms and attribution
+    are verified
+  rate_limit: Not assessed
+  status: research_only
+  evidence_url: https://www.workingnomads.com/terms
+  terms_url: https://www.workingnomads.com/terms
+  last_successful_check: null
+  last_error: Research only; no automated request made
+- id: linkedin_manual_import
+  name: LinkedIn user-provided job URLs and alerts
+  category: Manual user supplied
+  source_type: manual_import
+  official_url: https://www.linkedin.com/jobs/
+  coverage:
+  - User-supplied leads; geography must be verified from employer source
+  public_api: No automated LinkedIn access
+  authentication: User supplies URL or exported/pasted alert content
+  permitted_access: Offline parsing of user-provided text only; never fetch, browse,
+    log in, scrape, automate or use LinkedIn APIs
+  rate_limit: No requests are made
+  status: manual_import_only
+  evidence_url: null
+  terms_url: null
+  last_successful_check: null
+  last_error: No LinkedIn network access is implemented

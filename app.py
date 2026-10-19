@@ -6,20 +6,30 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 from filelock import Timeout
-from agent.db import database, JobRow, MatchRow, SearchRun, SearchDiagnostic, CandidateProfile, JobObservation
+from agent.db import database, JobRow, MatchRow, SearchRun, SearchDiagnostic, CandidateProfile, JobObservation, ManualImportLead, JobSourceStatus
 from agent.models import Job, Match, Candidate
 from agent.collectors import plain
 from agent.discovery import discover
 from agent.matching import region, ranking_key, evaluate
 from agent.settings import rules, ROOT
 from agent.registry import load_boards
-from agent.application_workflow import ApplicationPreparationError, _launch_from_dashboard, _private_paths
+from agent.source_registry import load_discovery_sources
+from agent.manual_import import import_user_content
+from agent.application_workflow import ApplicationPreparationError, _launch_from_dashboard, _launch_lever_from_dashboard, _matching_private_cv, _private_paths
 from agent.application_submission import (
     ApplicationSubmissionError,
     approve_and_submit,
     load_application_review,
     reconcile_pending_submissions,
 )
+
+def _has_matching_private_cv(root, job_id, application_url):
+    try:
+        _matching_private_cv(root, job_id, application_url)
+        return True
+    except ApplicationPreparationError:
+        return False
+
 
 st.set_page_config(page_title='QA Job Agent',layout='wide')
 st.title('QA Job Agent · MVP-01')
@@ -68,30 +78,78 @@ with factory() as session:
             continue
         job, match = Job.model_validate_json(row.payload), Match.model_validate_json(latest.payload)
         observations = [Job.model_validate_json(observation.payload) for observation in session.scalars(select(JobObservation).where(JobObservation.job_id==row.id))]
-        if match.professional_score is None or match.version != 'mvp-01.5':
+        if match.professional_score is None or match.version != 'mvp-01.6':
             snapshot = session.get(CandidateProfile,latest.candidate_id) if latest.candidate_id else None
             if snapshot:
                 match = evaluate(job,Candidate.model_validate_json(snapshot.payload),search_config,False)
             else:
                 match = match.model_copy(update={'in_main_recommendations':False,
                     'exclusion_reasons':['Historical match lacks a candidate snapshot; run discovery to reassess.']})
+        application_url = str(job.employer_application_url or job.url)
+        source_url = str(job.source_url or job.url)
+        source_states = list(session.scalars(select(JobSourceStatus).where(JobSourceStatus.job_id==row.id)))
+        if any(state.status == 'Observed in latest source feed' for state in source_states):
+            availability = 'Observed in latest source feed'
+        elif any(state.status == 'Expired per source' for state in source_states):
+            availability = 'Expired per source evidence'
+        elif any(state.status == 'Not observed in latest complete source scan' for state in source_states):
+            availability = 'Not observed; closure unconfirmed'
+        else:
+            availability = 'Not checked'
+        geographic = match.geographic_assessment
+        can_prepare=(row.status=='Shortlisted' and ((job.platform.casefold()=='greenhouse' and row.id==4 and job.company.casefold()=='bitdefender') or (job.platform.casefold()=='lever' and _has_matching_private_cv(ROOT,row.id,str(job.url)))))
         all_records.append({'ID':row.id,'Job title':job.title,'Company':job.company,'Location':job.location,'Remote status':job.remote,
           'Professional score':match.professional_score,'Professional fit':match.professional_fit or 'Needs Review',
-          'Geographic eligibility':match.eligibility,'Geographic reason':match.geographic_reason,
-          'Geographic priority':match.geographic_priority,'Exclusion reasons':'; '.join(match.exclusion_reasons),
-          'Source postings':len(observations),
-          'Recommendation':match.recommendation,'Salary':job.salary or 'Not published',
-          'Publication date':job.published,'Application link':str(job.url),'Source':job.platform,'Discovered':row.first_discovered[:10],
-          'Region':region(job.location + ' ' + job.title),'Last checked':row.last_checked[:19],'Review status':row.status,'_job':job,'_match':match,'_observations':observations})
+          'Geographic eligibility':match.eligibility,'Eligibility assessment':geographic.classification,
+          'Geographic reason':'; '.join(geographic.evidence) or match.geographic_reason,
+          'Geographic priority':geographic.priority,'EU work authorization':geographic.eu_work_authorization,
+          'US work authorization':geographic.us_work_authorization,
+          'Remote permitted locations':', '.join(geographic.remote_permitted_locations) or 'Not stated',
+          'Exclusion reasons':'; '.join(match.exclusion_reasons), 'Source postings':len(observations),
+          'Recommendation':match.recommendation,'Salary':job.salary or 'Not published','Employment type':job.employment_type,
+          'Publication date':job.published,'Availability':availability,'Prepare Application availability':'Available' if can_prepare else 'Not available',
+          'Application link':application_url,'Source posting':source_url,
+          'Source name':job.source_name or job.platform,'Source type':job.source_type,'Source':job.platform,
+          'Last verified':job.source_checked_at or row.last_checked,'Discovered':row.first_discovered[:10],
+          'Region':region(job.location + ' ' + job.title),'Last checked':row.last_checked[:19],
+          'Review status':row.status,'_job':job,'_match':match,'_observations':observations})
     records = [record for record in all_records if record['_match'].in_main_recommendations]
     cols = st.columns(7)
     metrics = [('Total vacancies',len(records)),('New vacancies',sum(r['Review status']=='New' for r in records)),
       ('Applied',sum(r['Review status']=='Applied' for r in all_records)),
       ('Strong professional fit',sum(r['Professional fit']=='Strong Match' for r in records)),('Good professional fit',sum(r['Professional fit']=='Good Match' for r in records)),
-      ('Geography needs review',sum(r['Geographic eligibility']=='Needs Review' for r in records)),('Last successful search',next((r.finished[:19] for r in runs if r.status=='Success'),'Never'))]
+      ('Geography needs review',sum(r['Eligibility assessment']=='Potentially Eligible — Needs Review' for r in records)),('Last successful search',next((r.finished[:19] for r in runs if r.status=='Success'),'Never'))]
     for col,(label,value) in zip(cols,metrics):
         col.metric(label,value)
     st.caption(f'Main recommendations: {len(records)}; excluded/audit records: {len(all_records)-len(records)}. These counts do not establish suitability or hiring eligibility.')
+    with st.expander('Discovery quality and employer diversity', expanded=True):
+        latest_diagnostic = session.scalar(select(SearchDiagnostic).order_by(SearchDiagnostic.id.desc()))
+        discovery_quality = json.loads(latest_diagnostic.payload) if latest_diagnostic else {}
+        totals = discovery_quality.get('totals', {})
+        clarified = {'Potentially Eligible — Needs Review', 'Eligible If Relocating', 'Needs Review'}
+        quality_metrics = [
+            ('Postings fetched (latest run)', runs[0].discovered if runs else 0),
+            ('Unique Software QA records', totals.get('unique_records', len(all_records))),
+            ('Professionally suitable', totals.get('unique_main_professionally_suitable', sum(r['Professional fit'] in {'Strong Match', 'Good Match'} for r in records))),
+            ('Geographically eligible', totals.get('unique_main_confirmed_geographically_eligible', sum(r['Eligibility assessment'] == 'Confirmed Eligible' for r in records))),
+            ('Needs eligibility clarification', totals.get('unique_main_needs_eligibility_clarification', sum(r['Eligibility assessment'] in clarified for r in records))),
+            ('Excluded / audit records', totals.get('unique_excluded_records', len(all_records) - len(records))),
+            ('Employers represented', totals.get('unique_employers_represented', len({r['Company'] for r in records}))),
+        ]
+        quality_cols = st.columns(4)
+        for col, (label, value) in zip(quality_cols, quality_metrics):
+            col.metric(label, value)
+        if discovery_quality:
+            st.caption(f"Sources attempted: {totals.get('active_sources', 0)} · successful: {totals.get('committed_boards', 0)} · incomplete/failed: {totals.get('failed_boards', 0)}. Incomplete scans are not presented as complete coverage.")
+        if records:
+            employer_counts = pd.DataFrame([
+                {'Employer': name, 'Recommended vacancies': count}
+                for name, count in sorted(
+                    __import__('collections').Counter(r['Company'] for r in records).items(),
+                    key=lambda item: (-item[1], item[0].casefold()))
+            ])
+            st.caption('Employer concentration is shown for transparency; legitimate vacancies from the same employer remain visible.')
+            st.table(employer_counts)
     view = st.sidebar.selectbox('Vacancy view',['Recommendations','Excluded / audit','All stored vacancies'])
     visible = records if view == 'Recommendations' else [r for r in all_records if not r['_match'].in_main_recommendations] if view == 'Excluded / audit' else all_records
     current_selection = st.session_state.get('selected_vacancy_id')
@@ -100,7 +158,7 @@ with factory() as session:
         st.info('The selected vacancy is no longer in the current filtered results. Select a row to view its details.')
     if visible:
         filtered = visible
-        for field in ['Region','Location','Remote status','Recommendation','Source','Review status']:
+        for field in ['Region','Location','Remote status','Availability','Eligibility assessment','Professional fit','Prepare Application availability','Source type','Recommendation','Source','Review status']:
             values = st.sidebar.multiselect(field,sorted({r[field] for r in visible}))
             if values:
                 filtered = [r for r in filtered if r[field] in values]
@@ -125,7 +183,8 @@ with factory() as session:
         ).hexdigest()[:12]
         table_event = st.dataframe(
             table, hide_index=True, height=420,
-            column_config={'Application link':st.column_config.LinkColumn('Original posting')},
+            column_config={'Application link':st.column_config.LinkColumn('Application URL'),
+                           'Source posting':st.column_config.LinkColumn('Source posting')},
             use_container_width=True, key=table_key,
             on_select='rerun', selection_mode='single-row')
         selected_id = st.session_state.get('selected_vacancy_id')
@@ -164,20 +223,43 @@ with factory() as session:
                     st.caption('Evaluation method: '+match.method)
 
                     st.markdown('#### Geographic eligibility')
-                    st.write(f'**{match.eligibility}** — {match.geographic_reason}')
+                    geographic = match.geographic_assessment
+                    st.write(f'**{geographic.classification}**')
+                    st.write(f'**EU work authorization:** {geographic.eu_work_authorization}')
+                    st.write(f'**US work authorization:** {geographic.us_work_authorization}')
+                    st.write(f'**Required residence:** {', '.join(geographic.required_residence_countries) or 'Not stated'}')
+                    st.write(f'**Remote permitted locations:** {', '.join(geographic.remote_permitted_locations) or 'Not stated'}')
+                    st.write(f'**Relocation:** {geographic.relocation_requirement}')
+                    st.write(f'**Visa sponsorship:** {geographic.visa_sponsorship} · **Contractor:** {geographic.contractor_eligibility} · **EOR:** {geographic.employer_of_record_availability}')
+                    st.write('**Evidence:** ' + ('; '.join(geographic.evidence) or match.geographic_reason))
 
+                    st.markdown('#### Source and availability')
+                    st.write(f'**Source:** {job.source_name or job.platform} ({job.source_type})')
+                    st.write(f'**Last verified:** {job.source_checked_at or selected['Last checked']} · **Availability evidence:** {selected['Availability']}')
+                    if job.source_evidence_url:
+                        st.link_button('Open source verification evidence', str(job.source_evidence_url))
                     st.markdown('#### Requirements')
                     st.write(job.requirements or match.mandatory_requirements or 'No separate requirements were published.')
                     with st.expander('Full job description'):
                         st.text(plain(job.description) or 'No description was published.')
 
                     if selected['Review status'] == 'Shortlisted':
-                        if match.eligibility == 'Ineligible':
-                            st.info('Application preparation is disabled because this vacancy is explicitly marked Ineligible.')
+                        if match.geographic_assessment.classification == 'Confirmed Ineligible':
+                            st.info('Application preparation is disabled because verified geographic evidence marks this vacancy Confirmed Ineligible.')
+                        elif job.platform.casefold() == 'lever':
+                            st.info('Supervised Lever preparation fills only unambiguous verified identity fields and a vacancy-matched private CV. Legal, salary, location and consent questions stay for manual review; Lever submission is disabled.')
+                            if not _has_matching_private_cv(ROOT, selected['ID'], str(job.url)):
+                                st.warning('A tailored private CV with application_metadata.json matching this vacancy ID and application URL is required before preparation.')
+                            elif st.button('Prepare Application', key=f"prepare-lever-{selected['ID']}"):
+                                try:
+                                    _launch_lever_from_dashboard(selected['ID'])
+                                    st.success('Visible Lever form preparation started. Final submission is disabled.')
+                                except (ApplicationPreparationError, OSError) as exc:
+                                    st.error(str(exc))
                         elif selected['ID'] != 4 or job.company.casefold() != 'bitdefender':
-                            st.info('Supervised preparation is currently enabled for Bitdefender vacancy ID 4 only.')
+                            st.info('Supervised Greenhouse preparation is currently enabled for Bitdefender vacancy ID 4; Lever forms are supported separately.')
                         else:
-                            if match.eligibility == 'Needs Review':
+                            if match.geographic_assessment.classification == 'Potentially Eligible — Needs Review':
                                 st.warning('Geographic eligibility is Needs Review. Preparation is provisional; do not proceed until the employer confirms location and work-authorization requirements.')
                             current_app_state = {}
                             _, _, state_path = _private_paths(ROOT, selected['ID'])
@@ -310,6 +392,48 @@ with factory() as session:
             st.info('No vacancies match the current filters.')
     else:
         st.info('No stored relevant vacancies in this view. Run discovery or inspect Excluded / audit for preserved reasons.')
+    with st.expander('Manual LinkedIn lead import — user supplied only'):
+        st.caption('Paste job alert text or one or more LinkedIn job URLs. No LinkedIn page is opened, fetched, or automated. Raw text and email content are not stored.')
+        pasted_content = st.text_area('Job URLs or alert text', key='manual-linkedin-import-content')
+        if st.button('Import user-provided leads', key='import-linkedin-leads'):
+            leads = import_user_content(session, pasted_content)
+            session.commit()
+            st.success(f'Imported or refreshed {len(leads)} sanitized lead(s); all remain unverified until matched to an official employer posting.')
+        imported = list(session.scalars(select(ManualImportLead).order_by(ManualImportLead.id.desc())))
+        if imported:
+            st.dataframe([{'ID':lead.id,'Title':lead.title,'Company':lead.company,'Location':lead.location,
+                           'LinkedIn URL':lead.linkedin_url,'Employer application URL':lead.employer_application_url or 'Not supplied',
+                           'Status':lead.status,'Possible verified ATS vacancy ID':lead.matched_job_id or 'No local exact match'}
+                          for lead in imported], hide_index=True, use_container_width=True,
+                         column_config={'LinkedIn URL':st.column_config.LinkColumn(),
+                                        'Employer application URL':st.column_config.LinkColumn()})
+        else:
+            st.caption('No user-provided leads imported yet.')
+    with st.expander('Discovery source registry and health'):
+        try:
+            configured_sources, source_errors = load_discovery_sources()
+            latest = session.scalar(select(SearchDiagnostic).order_by(SearchDiagnostic.id.desc()))
+            latest_diag = json.loads(latest.payload) if latest else {}
+            latest_reports = latest_diag.get('boards', [])
+            source_rows = []
+            for item in configured_sources:
+                source_reports = [report for report in latest_reports if report.get('platform') == item['id']]
+                successful_report = next((report for report in reversed(source_reports) if report.get('committed')), None)
+                latest_report = source_reports[-1] if source_reports else None
+                source_rows.append({
+                    'Source': item['name'], 'Type': item['source_type'], 'Coverage': ', '.join(item['coverage']),
+                    'Status': item['status'], 'Official source': item['official_url'],
+                    'Evidence': item.get('evidence_url') or item['official_url'],
+                    'Access': item['permitted_access'], 'Rate limit': item['rate_limit'],
+                    'Last successful check': (successful_report.get('source_checked_at') if successful_report else None) or item.get('last_successful_check') or 'Not checked',
+                    'Last error': (latest_report.get('error') if latest_report and not latest_report.get('committed') else None) or item.get('last_error') or 'None recorded',
+                })
+            st.dataframe(pd.DataFrame(source_rows), hide_index=True, use_container_width=True,
+                         column_config={'Official source':st.column_config.LinkColumn(), 'Evidence':st.column_config.LinkColumn()})
+            for error in source_errors:
+                st.warning(error)
+        except Exception as exc:
+            st.warning(f'Source registry could not be loaded: {type(exc).__name__}.')
     with st.expander('Search history'):
         st.dataframe([{'Run':r.id,'Started':r.started,'Finished':r.finished,'Status':r.status,'Fetched':r.discovered,'New relevant':r.new,'Errors':r.errors} for r in runs])
     with st.expander('Discovery diagnostics'):

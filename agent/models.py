@@ -50,7 +50,38 @@ class Job(BaseModel):
     url: HttpUrl
     platform: str
     source_id: str
+    source_name: str = ''
+    source_type: Literal['employer', 'aggregator', 'manual-import'] = 'employer'
+    source_url: HttpUrl | None = None
+    employer_application_url: HttpUrl | None = None
+    source_evidence_url: HttpUrl | None = None
+    source_checked_at: str | None = None
+    expires_at: str | None = None
+    remote_permitted_locations: list[str] = Field(default_factory=list)
+    work_authorization_requirements: str = ''
+    relocation_requirement: str = 'Unknown'
+    visa_sponsorship: str = 'Unknown'
+    contractor_eligibility: str = 'Unknown'
+    employer_of_record_availability: str = 'Unknown'
     discovered: str = Field(default_factory=now)
+
+
+class GeographicAssessment(BaseModel):
+    classification: Literal[
+        'Confirmed Eligible', 'Eligible If Relocating',
+        'Potentially Eligible — Needs Review', 'Confirmed Ineligible'
+    ] = 'Potentially Eligible — Needs Review'
+    eu_work_authorization: str = 'Needs Review'
+    us_work_authorization: str = 'Needs Review'
+    required_residence_countries: list[str] = Field(default_factory=list)
+    remote_permitted_locations: list[str] = Field(default_factory=list)
+    relocation_requirement: str = 'Unknown'
+    visa_sponsorship: str = 'Unknown'
+    contractor_eligibility: str = 'Unknown'
+    employer_of_record_availability: str = 'Unknown'
+    confidence: Literal['High', 'Medium', 'Low'] = 'Low'
+    evidence: list[str] = Field(default_factory=list)
+    priority: int = Field(default=5, ge=0, le=9)
 
 
 class Assessment(BaseModel):
@@ -79,7 +110,8 @@ class Match(BaseModel):
     professional_fit: Literal['Strong Match', 'Good Match', 'Needs Review', 'Not Recommended'] | None = None
     professional_reason: str = ''
     geographic_reason: str = ''
+    geographic_assessment: GeographicAssessment = Field(default_factory=GeographicAssessment)
     geographic_priority: int = Field(default=5, ge=0)
     in_main_recommendations: bool = False
     exclusion_reasons: list[str] = Field(default_factory=list)
-    version: str = 'mvp-01.5'
+    version: str = 'mvp-01.6'

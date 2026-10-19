@@ -91,6 +91,8 @@ def _load_current_sources(job_id: int, root: Path) -> tuple[object, object, obje
     root = root.resolve()
     _reject_explicitly_ineligible(job_id, root)
     job = _load_shortlisted_job(job_id, root)
+    if job.platform.casefold() != 'greenhouse':
+        raise ApplicationSubmissionError('Live submission is currently supported only for the Greenhouse pilot.')
     candidate = profile() if root == ROOT else _load_profile(root)
     preferences = load_application_preferences(root)
     answers = application_answers_for(job_id, job.company, str(job.url), preferences)

@@ -83,3 +83,30 @@ No private CV, candidate JSON, credentials or databases are included. Local back
 After PR #3 merged to main, discovery fetched 2,761 postings from 30/30 boards, normalized all 2,761, rejected 2,717 by title and retained 44 distinct current QA records (0 new on repeat discovery). Current unique-record eligibility is 0 Eligible, 25 Needs Review and 19 Ineligible. Professional evidence is 1 Strong Match, 1 Good Match, 36 Needs Review and 6 Not Recommended. All current vacancy titles, locations, remote labels, match scores, eligibility concerns and original URLs are in a local ignored report at `private/daily-vacancy-review-2026-10-19.md`; it is generated from local SQLite and is not included in Git.
 
 The dashboard now lets the user set New, Reviewed, Shortlisted, Rejected or Applied. Status is saved on the SQLite job row; discovery updates posting and match history without changing that status. Automated tests exercised all four manual states over two repeated discoveries. The full Windows Python 3.12.14 suite now reports 168 passed and 48 subtests passed, with zero failures, skips or pytest warnings.
+
+## PR #14 discovery-quality refresh — 2026-10-19
+
+The 32-board employer registry adds the official MariaDB Greenhouse board and Qualysoft Lever board. A first-party [MariaDB Senior QA Automation Engineer posting](https://job-boards.greenhouse.io/mariadbplc/jobs/4962467101) and the [Qualysoft Lever board](https://jobs.lever.co/qualysoft) expose current QA roles. Automatic scanning also retains the prior verified employer boards and three permitted public feeds. WING Leading Edge's first-party page lists Senior QA / Software Tester in Bucharest, but its application route is email or LinkedIn, so it remains manual-only and LinkedIn is not accessed. SmartRecruiters remains research-only because the public posting API requires credentials not configured here.
+
+The latest real `--no-ai` scan is run 14. It completed 32/32 employer-board scans and two of three public feeds (34/35 sources committed overall). Arbeitnow returned HTTP 429 and was stopped; Himalayas reached its 50-page / 1,000-posting per-run cap and is explicitly incomplete. The overall run is `Partial`, not a complete coverage claim. Checkpoint/resume, bounded `Retry-After` handling and persistent private cooldown behavior are covered by synthetic tests; the current incomplete Himalayas cursor is kept only under ignored `data/.source_checkpoints/`.
+
+| Measure | Prior baseline | Run 14 / current matching |
+|---|---:|---:|
+| Verified employer boards | 30 | 32 |
+| Sources attempted | 33 | 35 |
+| Sources committed | 32 | 34 |
+| Postings fetched and normalized | 3,855 | 3,980 |
+| Unique Software QA matches | 42 | 55 |
+| Main recommendations | 24 | 32 |
+| Excluded from main list | 18 | 23 |
+| Unique employers represented in recommendations | Not captured in the historical summary (17/24 were Bitdefender or Ubiquiti) | 10 |
+
+The per-run title rejection totals were 3,447 with no QA title keyword and 478 excluded-title matches (3,925 total). The 55 QA matches produced 32 main recommendations and 23 excluded records. Within the recommendations, 2 are Strong Match, 3 Good Match and 27 Needs Review; geography is separate: 0 Confirmed Eligible, 24 Eligible If Relocating and 8 Potentially Eligible — Needs Review. Across the 23 current-run exclusions, 22 were geographically excluded and 6 professionally excluded; these categories overlap. Separate historical audit rows remain in SQLite and are not counted as current-run QA matches.
+
+The latest recommendations represent 10 employers: Bitdefender 5, Ubiquiti 16, Qualysoft 3, MariaDB 2, and one each from Xebia CEE, PadSplit, Banco Plata, Sword Health, Globe Testing and Jabil. Bitdefender and Ubiquiti still account for 21/32 recommendations (66%); the previous user-reported concentration was 17/24 (71%). No same-employer vacancies were suppressed. Employer concentration is displayed in Streamlit. Rule changes now require software-testing evidence for generic test/quality titles, reject industrial titles without that evidence, accept verified English B2 when a minimum B2 is stated, ignore optional Java wording when ranking Xebia, and do not treat SDET as an automatic programming mismatch. Specific exclusion reasons are preserved with each assessment.
+
+Vacancy 40 (Xebia Senior QA Automation Engineer) now scores Good Match, 74.4, while geographic status remains Potentially Eligible — Needs Review because its posting lists Moldavia alongside EU-region/work-permit wording. Vacancy 13 (PadSplit) remains Needs Review: its title says “Anywhere in Europe,” its structured location says Ukraine, and the form asks the physical work country. Bucharest Bitdefender jobs remain `Eligible If Relocating`; no Moldova remote permission is inferred. Worldwide jobs and country-restricted remote jobs remain reviewable only when the source does not explicitly make them incompatible; no US work authorization is assumed.
+
+The live refresh added 9 SQLite vacancies; total records are 59. Status counts remain Shortlisted 4, Reviewed 1, New 54. Shortlisted IDs 1, 4, 5 and 40 match the pre-refresh backup; application history is unchanged. A SQLite-native backup was created before the refresh and another before offline rematching. Private candidate data, database files and public-source pagination checkpoints remain Git-ignored.
+
+Validation on Windows Python 3.13: **311 pytest tests passed, 48 subtests passed, 0 failed, 0 skipped**. The suite includes Streamlit AppTest plus source verification, title and industrial-role filtering, geographic axes, rate limiting, cooldown and resumable-pagination checks. The project remains subject to provider rate limits and the Himalayas page cap; Moldova employment arrangements must still be confirmed with employers. No application was submitted and LinkedIn was not accessed.

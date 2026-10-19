@@ -33,10 +33,18 @@ def filter_reason(job, config):
         return 'excluded_title'
     if not included:
         return 'no_qa_title_keyword'
-    # Generic quality/test engineers can be manufacturing or hardware inspection.
-    explicit_qa = bool(re.search(r'\b(qa|sdet|software|automation)\b|quality assurance', title))
-    software_context = bool(re.search(r'\b(software|web|api|playwright|selenium|javascript|regression|test automation|mobile application)\b', plain(job.description), re.I))
-    if not explicit_qa and not software_context:
+    description = plain(job.description)
+    # Generic test/quality titles occur in manufacturing and hardware. Require
+    # positive software-testing evidence for these ambiguous titles.
+    software_context = bool(re.search(
+        r'\b(software|web|api|playwright|selenium|cypress|postman|javascript|regression|test automation|'
+        r'mobile application|mobile app|application testing|software testing|manual testing|backend testing|'
+        r'functional testing|integration testing|automated tests?)\b', description, re.I))
+    industrial_title = bool(re.search(
+        r'\b(supplier|manufacturing|industrial|factory|production line|quality inspector|inspector|'
+        r'manufacturing quality|supplier quality)\b', title, re.I))
+    generic_test_title = bool(re.search(r'\b(test engineer|test analyst|test lead|quality engineer)\b', title))
+    if (generic_test_title or industrial_title) and not software_context:
         return 'no_software_testing_evidence'
     # Explicitly advanced programming SDET roles are outside the supplied profile.
     unsupported = 'sdet' in title and bool(re.search(r'(advanced|expert).{0,30}(java\b|python|c\+\+)',plain(job.description).lower()))
@@ -57,6 +65,8 @@ def region(location):
         return 'Romania'
     if countries & set(EU) or re.search(r'\b(eu|europe|european union)\b',text):
         return 'European Union / Europe'
+    if re.search(r'\b(united states|usa|u\.s\.|america)\b', text):
+        return 'United States'
     if re.search(r'\b(remote|worldwide|global|anywhere|international)\b',text):
         return 'International remote / unspecified'
     return 'Other / unknown'
@@ -124,22 +134,58 @@ def mentions(text, skill):
     return bool(re.search(r'(?<!\w)' + re.escape(skill.lower()) + r'(?!\w)', text.lower()))
 
 
+def _language_evidence(job_text, candidate):
+    languages = ('english','romanian','german','french','spanish','italian')
+    clauses = [clause for clause in re.split(r'[\n.;]', job_text)
+               if re.search(r'(fluent|native|proficien|minimum|at least|\b[abc][12]\b)', clause, re.I)
+               and any(re.search(r'\b'+language+r'\b', clause, re.I) for language in languages)]
+    if not clauses:
+        return False, True
+    candidate_text = ' '.join(candidate.languages).casefold()
+    ranks = {'A1':1,'A2':2,'B1':3,'B2':4,'C1':5,'C2':6}
+    verified = True
+    for clause in clauses:
+        language = next((item for item in languages if re.search(r'\b'+item+r'\b', clause, re.I)), None)
+        candidate_line = next((line.casefold() for line in candidate.languages
+                               if language and re.search(r'\b'+language+r'\b', line, re.I)), '')
+        if not language or not candidate_line:
+            verified = False
+            continue
+        candidate_levels = [match.upper() for match in re.findall(r'\b([abc][12])\b', candidate_line)]
+        explicit_level = re.search(r'(?:minimum|at least|level)?\s*[:=]?\s*([abc][12])\b', clause, re.I)
+        required_rank = ranks[explicit_level.group(1).upper()] if explicit_level else (ranks['C1'] if re.search(r'\b(fluent|native)\b', clause, re.I) else ranks['B2'])
+        if not candidate_levels or max(ranks[level] for level in candidate_levels) < required_rank:
+            verified = False
+    return True, verified
+
+
 def rule_assessment(job, candidate):
     text = '. '.join(clause for clause in re.split(r'[\n.;]', plain(job.description))
                      if not geography_only_requirement(clause)).lower()
     matching = [s for s in candidate.skills if mentions(text, s)]
-    mandatory = [s.strip() for s in re.split(r'[\n.;]',plain(job.description))
+    job_clauses = [s.strip() for s in re.split(r'[\n.;]',plain(job.description))]
+    language_requirement, language_verified = _language_evidence(plain(job.description), candidate)
+    mandatory = [s for s in job_clauses
                  if re.search(r'\b(must|required|mandatory|essential|minimum)\b',s,re.I)
-                 and not geography_only_requirement(s)]
+                 and not geography_only_requirement(s)
+                 and not (language_requirement and re.search(r'\b(?:english|romanian|german|french|spanish|italian)\b',s,re.I))]
     missing = []
     for skill in ['Python','Java','C++','Cypress','Appium','JMeter']:
-        if mentions(text, skill) and skill not in candidate.skills:
+        clauses = re.split(r'[\n.;]', plain(job.description))
+        skill_clauses = []
+        for index, clause in enumerate(clauses):
+            if mentions(clause, skill):
+                skill_clauses.append(' '.join(clauses[max(0,index-1):min(len(clauses),index+2)]))
+        optional_only = bool(skill_clauses) and all(
+            re.search(r'\b(preferred|preferably|desirable|optional|bonus|nice to have|a plus)\b', clause, re.I)
+            and not re.search(r'\b(required|must|mandatory|essential)\b', clause, re.I)
+            for clause in skill_clauses)
+        if skill_clauses and skill not in candidate.skills and not optional_only:
             missing.append(skill)
     years = [int(v) for v in re.findall(r'(\d+)\+?\s*years',text)]
     seniority = not years or max(years) <= candidate.experience_years
-    language_requirement = bool(re.search(r'(fluent|native|proficien|[bc][12]\b).{0,35}(english|romanian|german|french|spanish|italian)|(?:english|romanian|german|french|spanish|italian).{0,35}(fluent|native|proficien|[bc][12]\b)',text))
-    if language_requirement:
-        mandatory.append('Language proficiency requirement detected; candidate proficiency must be verified')
+    if language_requirement and not language_verified:
+        mandatory.append('Language requirement detected but the supplied candidate language evidence does not verify the stated level')
     degree_pattern = (
         r'\bmba\b|\b(?:bachelor[’\']?s?|master[’\']?s?|doctoral|ph\.?d\.?|university)\b.{0,60}\b(?:degree|computer science|engineering)\b|\bdegree\s+in\s+(?:computer science|software engineering|engineering)\b')
     degree_clauses = [clause for clause in re.split(r'[\n.;]', plain(job.description))
@@ -163,11 +209,11 @@ def rule_assessment(job, candidate):
         not education_text or any(term not in education_text for term in education_terms))
     if education_unverified:
         mandatory.append('Education requirement detected; candidate education is missing or does not verify the stated degree')
-    uncertain = bool(mandatory or missing or language_requirement or education_unverified or not seniority or 'sdet' in job.title.lower() or 'architect' in job.title.lower())
+    uncertain = bool(mandatory or missing or (language_requirement and not language_verified) or education_unverified or not seniority or 'architect' in job.title.lower())
     return Assessment(technical=min(1,len(matching)/6), experience=1 if seniority else .4,
         additional=.5, matching_skills=matching, missing_skills=missing,
         mandatory_requirements=mandatory, uncertain_mandatory=uncertain,
-        explanation='Conservative rule-based evidence matching. Language proficiency is unknown; mandatory requirements require human verification.')
+        explanation='Conservative rule-based evidence matching. Explicit candidate language evidence is checked only against stated levels; other mandatory requirements require human verification.')
 
 
 def score_parts(assessment, geo, config):
@@ -182,6 +228,24 @@ def score_parts(assessment, geo, config):
 
 def evaluate(job, candidate, config, use_ai=True):
     geo, reason = geography(job,candidate)
+    from agent.eligibility import assess_geographic_eligibility
+    geographic_assessment = assess_geographic_eligibility(job, candidate)
+    # Geography is classified separately from professional fit. Preserve legacy
+    # exclusions unless verified candidate facts establish an EU relocation path
+    # or the posting explicitly accepts international contractors/sponsorship.
+    target_words = ' '.join([job.location, job.title, *geographic_assessment.required_residence_countries,
+                             *geographic_assessment.remote_permitted_locations]).casefold()
+    target_eu_scope = bool(re.search(r'\b(eu|europe|european union|emea|romania|bucharest|bucuresti|germany|france|poland|netherlands)\b', target_words))
+    eu_relocation_path = (geographic_assessment.classification == 'Eligible If Relocating'
+                          and geographic_assessment.eu_work_authorization == 'Confirmed for all EU member states'
+                          and target_eu_scope)
+    international_path = (geographic_assessment.classification != 'Confirmed Ineligible' and
+                          ('explicitly accepted' in geographic_assessment.contractor_eligibility.casefold()
+                           or geographic_assessment.visa_sponsorship.startswith('Yes')))
+    if geo == 'Ineligible' and not eu_relocation_path and not international_path and geographic_assessment.classification != 'Confirmed Ineligible':
+        geographic_assessment = geographic_assessment.model_copy(update={
+            'classification':'Confirmed Ineligible', 'confidence':'High',
+            'evidence':[*geographic_assessment.evidence, reason or 'The legacy location assessment identifies an explicit outside-scope restriction.']})
     assessment = rule_assessment(job,candidate)
     method = 'rules'
     if use_ai and os.getenv('OPENAI_API_KEY'):
@@ -205,10 +269,13 @@ def evaluate(job, candidate, config, use_ai=True):
     score = score_parts(assessment,geo,config)
     professional_score, professional_fit, professional_reason = professional_assessment(job,candidate,assessment,config)
     exclusions = []
-    if not relevant(job,config):
-        exclusions.append('Title or software-testing relevance is outside the search rules.')
-    if geo == 'Ineligible':
+    relevance_exclusion = filter_reason(job,config)
+    if relevance_exclusion:
+        exclusions.append('Search rule exclusion: ' + relevance_exclusion + '.')
+    if geo == 'Ineligible' and not eu_relocation_path and not international_path:
         exclusions.append(reason)
+    if geographic_assessment.classification == 'Confirmed Ineligible' and reason not in exclusions:
+        exclusions.extend(geographic_assessment.evidence[-1:] or ['Explicit location or authorization evidence conflicts with the candidate’s current facts.'])
     if professional_fit == 'Not Recommended':
         exclusions.append(professional_reason)
     if exclusions:
@@ -222,4 +289,5 @@ def evaluate(job, candidate, config, use_ai=True):
       recommendation=recommendation, method=method, professional_score=professional_score,
       professional_fit=professional_fit, professional_reason=professional_reason,
       geographic_reason=reason, geographic_priority=geographic_priority(job,geo,EU),
+      geographic_assessment=geographic_assessment,
       in_main_recommendations=not exclusions, exclusion_reasons=exclusions)

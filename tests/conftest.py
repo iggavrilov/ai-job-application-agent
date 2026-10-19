@@ -14,6 +14,7 @@ def isolated_runtime(tmp_path, monkeypatch, candidate):
     import agent.logging_config as logging_config
     import agent.db as db
     monkeypatch.setattr(discovery, 'profile', lambda: candidate)
+    monkeypatch.setattr(discovery, 'active_api_sources', lambda: ([], []))
     for module in (discovery, logging_config, db):
         monkeypatch.setattr(module, 'ROOT', tmp_path)
     (tmp_path / 'data').mkdir()

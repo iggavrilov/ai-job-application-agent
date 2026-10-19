@@ -273,3 +273,23 @@ boards:
   verified_at: '2026-10-18T19:49:53.522555+00:00'
   notes: Exact board linked on official careers page; API HTTP 200, 192 postings at
     verification. Eligibility assessed per vacancy.
+- company: MariaDB
+  platform: greenhouse
+  board: mariadbplc
+  enabled: true
+  verification_status: verified
+  evidence_url: https://job-boards.greenhouse.io/mariadbplc/jobs/4962467101
+  verified_at: '2026-10-19T15:41:36+00:00'
+  notes: Official Greenhouse posting confirms the employer board ID and an active
+    Senior QA Automation Engineer role. Posting lists permitted hiring locations;
+    country-level eligibility is assessed per vacancy.
+- company: Qualysoft
+  platform: lever
+  board: qualysoft
+  enabled: true
+  verification_status: verified
+  evidence_url: https://jobs.lever.co/qualysoft
+  verified_at: '2026-10-19T15:41:36+00:00'
+  notes: Official Lever employer board lists active QA Automation Engineer and
+    Senior QA Engineer roles in Bucharest. Location and employment eligibility are
+    assessed per vacancy.
