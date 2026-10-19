@@ -63,6 +63,27 @@ class VacancyApplicationAnswers(BaseModel):
     salary_form_value: str | None = None
 
 
+class GeographicSearchPreferences(BaseModel):
+    """Private candidate-approved search priorities, separate from vacancy answers."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    preferred_work_arrangement: Literal['Remote while residing in current country'] = 'Remote while residing in current country'
+    willing_to_relocate: bool = False
+    relocation_scope: list[str] = Field(default_factory=list)
+    relocation_only_for_attractive_offer: bool = True
+    eu_work_authorization_confirmed: bool = False
+    us_work_authorization: Literal['Unknown', 'Confirmed', 'Not authorized'] = 'Unknown'
+    priority_order: list[Literal[
+        'confirmed_remote_from_moldova',
+        'international_remote_moldova_unconfirmed',
+        'moldova_based',
+        'remote_requiring_romania_or_eu_residence',
+        'eu_hybrid_or_onsite',
+        'us_international_remote_or_b2b',
+    ]] = Field(default_factory=list)
+
+
 class ApplicationPreferences(BaseModel):
     """Candidate-confirmed employer-form preferences, loaded only from private storage."""
 
@@ -80,6 +101,7 @@ class ApplicationPreferences(BaseModel):
     salary_conversion_rate: str | None = None
     salary_conversion_date: str | None = None
     salary_conversion_source: str | None = None
+    geographic_search: GeographicSearchPreferences | None = None
     vacancy_answers: dict[str, VacancyApplicationAnswers] = Field(default_factory=dict)
 
 
