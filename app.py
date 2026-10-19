@@ -90,7 +90,7 @@ with factory() as session:
         minimum = st.sidebar.slider('Minimum professional score',0,100,0)
         after = st.sidebar.date_input('Discovered on or after',value=date(2020,1,1))
         filtered = [r for r in filtered if country.lower() in r['Location'].lower() and title.lower() in r['Job title'].lower() and (r['Professional score'] or 0)>=minimum and r['Discovered']>=after.isoformat()]
-        order = st.sidebar.selectbox('Rank by',['Geographic priority','Professional score'])
+        order = st.sidebar.selectbox('Rank by',['Professional score','Geographic priority'])
         remote_preferred = search_config.get('remote_preferred', True)
         filtered.sort(key=lambda r:ranking_key(r,order,remote_preferred))
         if remote_preferred:
