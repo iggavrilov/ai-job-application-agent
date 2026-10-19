@@ -7,9 +7,9 @@ from filelock import FileLock
 from sqlalchemy import select
 from agent.settings import ROOT, profile, rules
 from agent.registry import load_boards
-from agent.models import now
+from agent.models import now, Job
 from agent.db import database, CandidateProfile, Company, Source, JobRow, JobObservation, MatchRow, SearchRun, SearchDiagnostic, JobSourceStatus
-from agent.collectors import collect, collect_public_source
+from agent.collectors import collect, collect_public_source, clear_public_checkpoint
 from agent.source_registry import active_api_sources
 from agent.matching import filter_reason, canonical, fingerprint, evaluate
 from agent.logging_config import setup_logging
@@ -154,11 +154,16 @@ def discover(use_ai=True):
                         diagnostics['boards'].append(report)
                         scan_started = now()
                         try:
+                            checkpoint_path = (ROOT/'data'/'.source_checkpoints'/f"{board['source_registry']['id']}.json"
+                                               if board['source_kind'] == 'aggregator' else
+                                               ROOT/'data'/'.source_checkpoints'/f"employer-{board['platform']}-{board['board']}.json")
                             jobs = (collect_public_source(board['source_registry'], client,
                                                          config.get('request_interval_seconds',1),
-                                                         board['source_registry'].get('max_pages',500))
+                                                         board['source_registry'].get('max_pages',500),
+                                                         checkpoint_path=checkpoint_path)
                                     if board['source_kind'] == 'aggregator' else
-                                    collect(board,client,config.get('request_interval_seconds',1)))
+                                    collect(board,client,config.get('request_interval_seconds',1),
+                                            rate_limit_path=checkpoint_path))
                             warnings = getattr(jobs,'warnings',[])
                             report.update(published=getattr(jobs,'published_count',len(jobs)), normalized=len(jobs),
                                           malformed=len(warnings), expired=getattr(jobs,'expired_count',0),
@@ -227,6 +232,8 @@ def discover(use_ai=True):
                                 session.add(MatchRow(job_id=row.id,candidate_id=candidate_id,payload=json.dumps(context),version=version))
                             record_complete_source_scan(session, board, source.id, jobs, scan_started)
                             session.commit()
+                            if getattr(jobs, 'pagination_complete', True):
+                                clear_public_checkpoint(checkpoint_path)
                             committed_results.update(board_results)
                             report.update(committed=True, new=new_count, existing_or_merged=report['relevant']-new_count,
                                           stage='committed',
@@ -268,6 +275,24 @@ def discover(use_ai=True):
             totals['unique_records'] = len(committed_results)
             totals['unique_main_records'] = sum(result.in_main_recommendations for result in committed_results.values())
             totals['unique_excluded_records'] = totals['unique_records'] - totals['unique_main_records']
+            totals['unique_main_professionally_suitable'] = sum(
+                result.in_main_recommendations and result.professional_fit in {'Strong Match','Good Match'}
+                for result in committed_results.values())
+            totals['unique_main_needs_eligibility_clarification'] = sum(
+                result.in_main_recommendations and result.geographic_assessment.classification in {
+                    'Eligible If Relocating','Potentially Eligible — Needs Review'}
+                for result in committed_results.values())
+            totals['unique_main_confirmed_geographically_eligible'] = sum(
+                result.in_main_recommendations and result.geographic_assessment.classification == 'Confirmed Eligible'
+                for result in committed_results.values())
+            employer_names = set()
+            if committed_results:
+                persisted_jobs = session.scalars(select(JobRow).where(JobRow.id.in_(committed_results)))
+                employer_names = {Job.model_validate_json(row.payload).company for row in persisted_jobs}
+            totals['unique_employers_scanned'] = len({
+                report['company'] for report in diagnostics['boards']
+                if report['source_kind'] == 'employer' and report['committed']})
+            totals['unique_employers_represented'] = len(employer_names)
             for result in committed_results.values():
                 if result.in_main_recommendations:
                     totals['unique_main_professional_' + result.professional_fit] += 1

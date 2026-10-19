@@ -37,6 +37,8 @@ def assess_geographic_eligibility(job, candidate) -> GeographicAssessment:
         'Spain': ['madrid', 'barcelona'], 'Sweden': ['stockholm'], 'United States': ['washington dc', 'new york'],
     }
     found = {country for country in countries if _has(location, country)}
+    if _has(location, 'Moldavia'):
+        found.add('Moldova')
     for country, aliases in cities.items():
         if any(_has(location, alias) for alias in aliases):
             found.add(country)
@@ -166,8 +168,14 @@ def assess_geographic_eligibility(job, candidate) -> GeographicAssessment:
             classification = 'Potentially Eligible — Needs Review'
             evidence.append('Required residence differs from current Moldova residence')
 
-    if 'Moldova' in found and re.search(r'\b(?:eu[- ]only|work (?:from|in|within) the eu|eu member states)\b', description):
+    moldova_eu_contradiction = ('Moldova' in found and bool(re.search(
+        r'\b(?:eu[- ]only|work (?:from|in|within) (?:the )?(?:eu|european union)|'
+        r'work from the european union region|eu member states)\b', description)))
+    if moldova_eu_contradiction:
+        classification = 'Potentially Eligible — Needs Review'
         evidence.append('The posting names Moldova while also requiring EU-only work/location eligibility; confirm whether the Moldova location is a separate option or excluded')
+    if re.search(r'anywhere in europe', _normal(job.title)) and re.search(r'\bukraine\b', location):
+        evidence.append('The title says Anywhere in Europe but the structured source location names Ukraine; the application asks for the physical work country. Confirm whether Moldova is an accepted country.')
     if not evidence:
         evidence.append('No specific remote-permitted countries, residence rule, or work-authorization statement was found')
 

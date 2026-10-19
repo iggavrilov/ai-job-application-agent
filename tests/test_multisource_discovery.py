@@ -6,7 +6,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from agent.collectors import collect_public_source
+from agent.collectors import collect, collect_public_source, clear_public_checkpoint
 from agent.db import database, Company, Source, JobRow, JobSourceStatus
 from agent.discovery import upsert_job, record_complete_source_scan
 from agent.eligibility import assess_geographic_eligibility
@@ -29,6 +29,17 @@ def test_registry_has_no_duplicate_ids_and_integrations_have_evidence():
     assert {item['id'] for item in enabled} == {'arbeitnow','remoteok','himalayas'}
     assert all(item.get('evidence_url','').startswith('https://') for item in sources if item['status']=='integrated')
     assert any(item['id']=='working_nomads' and item['status']=='research_only' for item in sources)
+
+
+def test_new_qa_employer_boards_are_officially_evidenced():
+    from agent.registry import load_boards
+    boards, errors=load_boards()
+    assert not errors
+    indexed={(item['platform'],item['board']):item for item in boards}
+    assert indexed[('greenhouse','mariadbplc')]['verification_status']=='verified'
+    assert indexed[('greenhouse','mariadbplc')]['evidence_url'].startswith('https://job-boards.greenhouse.io/mariadbplc/')
+    assert indexed[('lever','qualysoft')]['verification_status']=='verified'
+    assert indexed[('lever','qualysoft')]['evidence_url']=='https://jobs.lever.co/qualysoft'
 
 
 def test_arbeitnow_paginates_and_keeps_provider_posting_url(monkeypatch):
@@ -101,6 +112,97 @@ def test_public_feed_stops_on_429_without_retry(monkeypatch):
             collect_public_source(source('remoteok'),client,interval=0)
     assert len(api_calls)==1
     assert limited.value.policy_http_status == 429
+
+
+def test_429_honors_bounded_retry_after_once(monkeypatch):
+    waits=[]
+    monkeypatch.setattr('agent.collectors.time.sleep', lambda seconds: waits.append(seconds))
+    calls=[]
+    def handler(request):
+        if request.url.path=='/robots.txt': return httpx.Response(404)
+        calls.append(request.url)
+        if len(calls)==1: return httpx.Response(429,headers={'Retry-After':'2'})
+        return httpx.Response(200,json=[{'legal':'metadata'}])
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result=collect_public_source(source('remoteok'),client,interval=0)
+    assert result.pages_fetched==1 and calls and len(calls)==2
+    assert waits==[1.0,2.0]
+
+
+def test_repeated_429_stops_after_one_bounded_retry(monkeypatch):
+    monkeypatch.setattr('agent.collectors.time.sleep', lambda *_: None)
+    calls=[]
+    def handler(request):
+        if request.url.path=='/robots.txt': return httpx.Response(404)
+        calls.append(request.url)
+        return httpx.Response(429,headers={'Retry-After':'1'})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError,match='after one bounded retry'):
+            collect_public_source(source('remoteok'),client,interval=0)
+    assert len(calls)==2
+
+
+def test_long_retry_after_sets_private_cooldown_and_skips_next_run(monkeypatch,tmp_path):
+    monkeypatch.setattr('agent.collectors.time.sleep', lambda *_: None)
+    checkpoint=tmp_path/'arbeitnow.json'
+    calls=[]
+    def handler(request):
+        if request.url.path=='/robots.txt': return httpx.Response(404)
+        calls.append(request.url)
+        return httpx.Response(429,headers={'Retry-After':'120'})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError,match='safety cap'):
+            collect_public_source(source('arbeitnow'),client,interval=0,checkpoint_path=checkpoint)
+        with pytest.raises(RuntimeError,match='cooldown is active'):
+            collect_public_source(source('arbeitnow'),client,interval=0,checkpoint_path=checkpoint)
+    assert len(calls)==1
+    assert checkpoint.with_suffix('.json.rate-limit.json').exists()
+    clear_public_checkpoint(checkpoint)
+    assert not checkpoint.with_suffix('.json.rate-limit.json').exists()
+
+
+def test_employer_board_429_cooldown_skips_endpoint_on_next_run(monkeypatch,tmp_path):
+    monkeypatch.setattr('agent.collectors.time.sleep', lambda *_: None)
+    checkpoint=tmp_path/'employer-greenhouse-example.json'
+    calls=[]
+    def handler(request):
+        if request.url.path=='/robots.txt': return httpx.Response(404)
+        calls.append(request.url)
+        return httpx.Response(429,headers={'Retry-After':'120'})
+    board={'platform':'greenhouse','board':'example','company':'Example'}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError,match='safety cap'):
+            collect(board,client,interval=0,rate_limit_path=checkpoint)
+        with pytest.raises(RuntimeError,match='cooldown is active'):
+            collect(board,client,interval=0,rate_limit_path=checkpoint)
+    assert len(calls)==1
+    assert checkpoint.with_suffix('.json.rate-limit.json').exists()
+    clear_public_checkpoint(checkpoint)
+    assert not checkpoint.with_suffix('.json.rate-limit.json').exists()
+
+
+def test_himalayas_pagination_resumes_from_private_checkpoint(monkeypatch,tmp_path):
+    monkeypatch.setattr('agent.collectors.time.sleep', lambda *_: None)
+    checkpoint=tmp_path/'himalayas.json'
+    requests=[]
+    def handler(request):
+        requests.append(str(request.url))
+        if request.url.path=='/robots.txt': return httpx.Response(404)
+        if request.url.params.get('cursor')=='c2':
+            return httpx.Response(200,json={'jobs':[{'guid':'job-2','title':'QA Engineer','companyName':'Acme',
+                'applicationLink':'https://himalayas.example/job-2','locationRestrictions':['Romania']}], 'totalCount':2})
+        return httpx.Response(200,json={'jobs':[{'guid':'job-1','title':'QA Analyst','companyName':'Acme',
+            'applicationLink':'https://himalayas.example/job-1','locationRestrictions':['Romania']}],
+            'nextCursor':'c2','totalCount':2})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        first=collect_public_source(source('himalayas'),client,interval=0,max_pages=1,checkpoint_path=checkpoint)
+        assert len(first)==1 and not first.pagination_complete
+        second=collect_public_source(source('himalayas'),client,interval=0,max_pages=1,checkpoint_path=checkpoint)
+    assert len(second)==2 and second.pagination_complete
+    assert any('cursor=c2' in item for item in requests)
+    assert checkpoint.exists()
+    clear_public_checkpoint(checkpoint)
+    assert not checkpoint.exists()
 
 
 def test_robots_disallow_prevents_api_call(monkeypatch):
@@ -181,6 +283,40 @@ def test_us_work_authorization_is_not_inferred_and_international_contract_is_rev
     result=evaluate(contractor,candidate,rules(),False)
     assert result.geographic_assessment.classification=='Potentially Eligible — Needs Review'
     assert result.in_main_recommendations
+
+
+def test_xebia_moldavia_and_eu_work_requirement_stays_needs_review(candidate):
+    eu_candidate=candidate.model_copy(update={'citizenship':'Romanian citizen and Romanian/EU passport holder.',
+        'work_authorization':'Legally authorized to work in all EU member states without an EU work permit.'})
+    job=Job(title='Senior QA Automation Engineer',company='Xebia CEE',
+        location='Bulgaria; Moldavia; Poland; Romania',remote='Remote',
+        description='Work from the European Union region and a work permit are required.',
+        url='https://job-boards.greenhouse.io/xebiacee/jobs/5836999004',platform='greenhouse',source_id='xebia-5836999004')
+    result=assess_geographic_eligibility(job,eu_candidate)
+    assert result.eu_work_authorization=='Confirmed for all EU member states'
+    assert result.classification=='Potentially Eligible — Needs Review'
+    assert any('names Moldova while also requiring EU-only' in item for item in result.evidence)
+
+
+def test_padsplit_anywhere_europe_and_ukraine_location_requires_country_confirmation(candidate):
+    job=Job(title='QA Engineer (Anywhere in Europe)',company='PadSplit',location='Ukraine',remote='Remote',
+        description='Contract. Which country in Europe will you be physically working out of?',
+        url='https://jobs.lever.co/padsplit/349741f7-56f2-4556-9372-12b24f95b28a',platform='lever',source_id='padsplit-349741f7')
+    result=assess_geographic_eligibility(job,candidate)
+    assert result.classification=='Potentially Eligible — Needs Review'
+    assert any('structured source location names Ukraine' in item and 'whether Moldova is an accepted country' in item for item in result.evidence)
+
+
+def test_bucharest_bitdefender_requires_romania_location_but_not_assumed_moldova_remote(candidate):
+    eu_candidate=candidate.model_copy(update={'citizenship':'Romanian citizen and Romanian/EU passport holder.',
+        'work_authorization':'Legally authorized to work in all EU member states without an EU work permit.'})
+    job=Job(title='QA Engineer',company='Bitdefender',location='Bucharest',remote='Unknown',
+        description='The position is based in Bucharest, Romania.',url='https://job-boards.eu.greenhouse.io/scbitdefendersrl/jobs/4926040101',
+        platform='greenhouse',source_id='4926040101')
+    result=assess_geographic_eligibility(job,eu_candidate)
+    assert result.classification=='Eligible If Relocating'
+    assert 'Moldova' not in result.remote_permitted_locations
+    assert 'has not confirmed relocation' in result.relocation_requirement
 
 
 def test_manual_linkedin_import_is_offline_sanitized_and_idempotent(tmp_path):
@@ -278,12 +414,37 @@ def test_live_submission_source_guard_rejects_lever_even_if_state_exists(tmp_pat
     'QA Automation Engineer','Automation Test Engineer','Test Automation Engineer','SDET',
     'Software Development Engineer in Test','Quality Assurance Engineer','Quality Engineer',
     'Software Quality Engineer','QA Analyst','Test Analyst','Senior Test Engineer','QA Lead','Test Lead',
-    'Web QA Engineer','API QA Engineer','Mobile QA Engineer'
+    'Web QA Engineer','API QA Engineer','Mobile QA Engineer','Test Engineer','Software Test Lead',
+    'Automation Tester','Quality Assurance Analyst'
 ])
 def test_expanded_requested_title_coverage(title):
     job=Job(title=title,company='Synthetic employer',location='Remote Europe',remote='Remote',
         description='Playwright Selenium API testing JavaScript SQL regression automation web software testing',
         url='https://example.org/qa',platform='lever',source_id=title.replace(' ','-'))
+    assert filter_reason(job,rules()) is None
+
+
+@pytest.mark.parametrize('title',[
+    'Supplier Quality Engineer','Manufacturing Quality Engineer','Quality Inspector','Test Engineer'
+])
+def test_non_software_industrial_quality_titles_are_excluded(title):
+    job=Job(title=title,company='Synthetic manufacturer',location='Bucharest',remote='Onsite',
+        description='Inspect production lots, supplier defects, factory processes and manufacturing quality records.',
+        url='https://example.org/industrial',platform='lever',source_id=title.replace(' ','-'))
+    assert filter_reason(job,rules())=='no_software_testing_evidence'
+
+
+def test_generic_test_engineer_requires_positive_software_testing_evidence():
+    job=Job(title='Test Engineer',company='Synthetic employer',location='Romania',remote='Remote',
+        description='Test web applications and REST APIs; create Playwright regression tests.',
+        url='https://example.org/software-test',platform='lever',source_id='software-test')
+    assert filter_reason(job,rules()) is None
+
+
+def test_industrial_title_with_explicit_software_testing_evidence_remains_reviewable():
+    job=Job(title='Manufacturing Quality Engineer',company='Synthetic employer',location='Romania',remote='Remote',
+        description='In addition to manufacturing controls, perform software testing of web applications using Selenium.',
+        url='https://example.org/mixed-quality',platform='lever',source_id='mixed-quality')
     assert filter_reason(job,rules()) is None
 
 

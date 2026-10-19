@@ -94,8 +94,13 @@ class OfflineValidation(unittest.TestCase):
             for code in [429,503]:
                 with self.subTest(platform=platform,code=code):
                     with httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(404 if r.url.path=='/robots.txt' else code))) as client:
-                        with self.assertRaises(httpx.HTTPStatusError):
-                            collect({'platform':platform,'board':'mock','company':'Mock'},client,0)
+                        if code == 429:
+                            with self.assertRaises(RuntimeError) as limited:
+                                collect({'platform':platform,'board':'mock','company':'Mock'},client,0)
+                            self.assertEqual(limited.exception.policy_http_status,429)
+                        else:
+                            with self.assertRaises(httpx.HTTPStatusError):
+                                collect({'platform':platform,'board':'mock','company':'Mock'},client,0)
 
     def test_robots_restrictions(self):
         with httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(200,text='User-agent: *\nDisallow: /'))) as client:

@@ -1,7 +1,7 @@
 import json
 import pytest
 from agent.models import Job, Match
-from agent.matching import evaluate, geography, ranking_key, EU, region, relevant
+from agent.matching import evaluate, geography, ranking_key, EU, region, relevant, filter_reason
 from agent.settings import rules
 
 
@@ -74,6 +74,57 @@ def test_core_professional_gap_is_separate_from_target_geography(candidate):
 def test_sparse_professional_evidence_is_reviewable_not_fabricated(candidate):
     result=evaluate(qa('Europe',description='Testing a web application.'),candidate,rules(),False)
     assert result.professional_fit=='Needs Review' and result.in_main_recommendations
+
+
+def test_explicit_b2_language_requirement_uses_candidate_language_evidence(candidate):
+    from agent.matching import rule_assessment
+    job=qa(description='Playwright JavaScript API testing SQL Drupal Regression testing. Fluent English (minimum B2 level).')
+    verified=candidate.model_copy(update={'languages':['English: B2']})
+    assessment=rule_assessment(job,verified)
+    assert not assessment.uncertain_mandatory
+    assert not any('Language requirement' in item for item in assessment.mandatory_requirements)
+
+
+def test_language_requirement_above_verified_b2_stays_uncertain(candidate):
+    from agent.matching import rule_assessment
+    job=qa(description='Playwright JavaScript API testing SQL Drupal Regression testing. Fluent English is required.')
+    verified=candidate.model_copy(update={'languages':['English: B2']})
+    assessment=rule_assessment(job,verified)
+    assert assessment.uncertain_mandatory
+    assert any('does not verify the stated level' in item for item in assessment.mandatory_requirements)
+
+
+def test_preferred_unverified_language_is_not_treated_as_a_mandatory_gap(candidate):
+    from agent.matching import rule_assessment
+    job=qa(description='Playwright JavaScript API testing SQL Drupal Regression testing. Object-oriented programming, preferably Java.')
+    assessment=rule_assessment(job,candidate)
+    assert 'Java' not in assessment.missing_skills
+    assert not assessment.uncertain_mandatory
+
+
+def test_required_unverified_language_remains_a_professional_gap(candidate):
+    from agent.matching import rule_assessment
+    job=qa(description='C++ required for the role.')
+    assessment=rule_assessment(job,candidate)
+    assert 'C++' in assessment.missing_skills
+    assert assessment.uncertain_mandatory
+
+
+def test_sdet_title_alone_does_not_create_unverified_programming_requirement(candidate):
+    job=qa(title='Senior QA Automation Engineer - SDET',
+        description='Playwright JavaScript API testing SQL Drupal Regression testing. Java experience is preferred.')
+    result=evaluate(job,candidate,rules(),False)
+    assert result.professional_fit=='Strong Match'
+    assert result.in_main_recommendations
+
+
+def test_sdet_with_explicit_unsupported_advanced_programming_requirement_is_excluded(candidate):
+    job=qa(title='Senior QA Automation Engineer - SDET',
+        description='Expert Java programming required for the role.')
+    result=evaluate(job,candidate,rules(),False)
+    assert result.recommendation=='Not Recommended'
+    assert 'advanced_programming_sdet' in result.exclusion_reasons[0]
+    assert filter_reason(job,rules())=='advanced_programming_sdet'
 
 
 def test_geographic_priority_moldova_romania_eu_and_no_cyprus_category(candidate):

@@ -4,6 +4,7 @@ import json
 import re
 import time
 import logging
+from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urljoin, urlencode, parse_qsl
 from urllib.robotparser import RobotFileParser
@@ -30,6 +31,33 @@ class CollectedJobs(list):
         self.expired_postings = []
         self.pages_fetched = 0
         self.pagination_complete = True
+        self.checkpoint_path = None
+
+
+def _write_public_checkpoint(path, source_id, result, next_state, complete):
+    if path is None:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        'source_id': source_id,
+        'next_state': next_state,
+        'complete': bool(complete),
+        'jobs': [job.model_dump(mode='json') for job in result],
+        'expired_postings': [job.model_dump(mode='json') for job in result.expired_postings],
+        'published_count': result.published_count,
+        'pages_fetched': result.pages_fetched,
+        'expired_count': result.expired_count,
+    }
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(payload), encoding='utf-8')
+    temporary.replace(path)
+
+
+def clear_public_checkpoint(path):
+    if path is not None:
+        Path(path).unlink(missing_ok=True)
+        Path(path).with_suffix(Path(path).suffix + '.rate-limit.json').unlink(missing_ok=True)
 
 PUBLIC_FEEDS = {
     'arbeitnow': 'https://www.arbeitnow.com/api/job-board-api?page=1',
@@ -39,8 +67,13 @@ PUBLIC_FEEDS = {
 
 
 class PublicFeedRateLimited(RuntimeError):
-    """Safe marker for a provider rate limit; callers must stop without retrying."""
+    """Safe marker for a provider rate limit after one bounded retry."""
     policy_http_status = 429
+
+    def __init__(self, message, resume_state=None, retry_after_seconds=None):
+        super().__init__(message)
+        self.resume_state = resume_state
+        self.retry_after_seconds = retry_after_seconds
 
 ENDPOINTS = {
     'greenhouse': 'https://boards-api.greenhouse.io/v1/boards/{board}/jobs?content=true',
@@ -136,21 +169,13 @@ def check_robots(client, url, interval=1):
     return robots.status_code
 
 
-def collect(board, client, interval=1):
+def collect(board, client, interval=1, rate_limit_path=None):
     platform = board['platform']
     url = ENDPOINTS[platform].format(board=board['board'])
+    source_id = f"{platform}:{board['board']}"
+    _check_rate_limit_cooldown(rate_limit_path, source_id)
     check_robots(client, url, interval)
-    for _ in range(6):
-        response = client.get(url, follow_redirects=False)
-        if not response.is_redirect:
-            break
-        target = urljoin(url, response.headers['location'])
-        if urlsplit(target).scheme != 'https':
-            raise RuntimeError('Public API redirect must use HTTPS')
-        check_robots(client, target, interval)
-        url = target
-    else:
-        raise RuntimeError('Too many public API redirects')
+    response = _request_with_bounded_retry(client,url,interval,source_id,rate_limit_path)
     response.raise_for_status()  # Includes 429: do not retry aggressively.
     data = response.json()
     items = data if platform == 'lever' else data['jobs']
@@ -257,7 +282,86 @@ def normalize_public(source, item):
                source_checked_at=checked, expires_at=expiry, remote_permitted_locations=restrictions)
 
 
-def _api_json(client, url, interval, params=None, robots_checked=False):
+def _parse_retry_after(value):
+    if not value:
+        return None
+    try:
+        seconds = float(value.strip())
+    except (ValueError, AttributeError):
+        try:
+            from email.utils import parsedate_to_datetime
+            seconds = (parsedate_to_datetime(value).astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(0.0, seconds)
+
+
+def _retry_after_seconds(value, maximum=10):
+    seconds = _parse_retry_after(value)
+    if seconds is None:
+        return 1.0
+    return seconds if seconds <= maximum else None
+
+
+def _rate_limit_sidecar(path):
+    return Path(path).with_suffix(Path(path).suffix + '.rate-limit.json') if path else None
+
+
+def _check_rate_limit_cooldown(path, source_id):
+    sidecar=_rate_limit_sidecar(path)
+    if not sidecar or not sidecar.is_file():
+        return
+    cooldown=json.loads(sidecar.read_text(encoding='utf-8'))
+    if cooldown.get('source_id')!=source_id:
+        raise ValueError('Source rate-limit checkpoint identity mismatch')
+    remaining=float(cooldown.get('blocked_until',0))-time.time()
+    if remaining>0:
+        raise PublicFeedRateLimited('Source cooldown is active; endpoint request skipped',retry_after_seconds=remaining)
+    sidecar.unlink(missing_ok=True)
+
+
+def _store_rate_limit_cooldown(path, source_id, seconds):
+    sidecar=_rate_limit_sidecar(path)
+    if not sidecar:
+        return
+    sidecar.parent.mkdir(parents=True,exist_ok=True)
+    sidecar.write_text(json.dumps({'source_id':source_id,'blocked_until':time.time()+(seconds or 300)}),encoding='utf-8')
+
+
+def _request_with_bounded_retry(client, url, interval, source_id, rate_limit_path=None, params=None):
+    def request_once():
+        target_url=url
+        for _ in range(6):
+            response=client.get(target_url,params=params,follow_redirects=False)
+            if not response.is_redirect:
+                return response
+            target=urljoin(str(response.url),response.headers.get('location',''))
+            if urlsplit(target).scheme!='https':
+                raise RuntimeError('Public API redirect must use HTTPS')
+            check_robots(client,target,interval)
+            target_url=target
+        raise RuntimeError('Too many public API redirects')
+
+    response=request_once()
+    if response.status_code==429:
+        retry_after=_parse_retry_after(response.headers.get('Retry-After'))
+        wait=_retry_after_seconds(response.headers.get('Retry-After'))
+        retried=False
+        if wait is not None:
+            time.sleep(wait)
+            retried=True
+            response=request_once()
+        if response.status_code==429:
+            retry_after=_parse_retry_after(response.headers.get('Retry-After')) or retry_after
+            cooldown=max(60.0,retry_after) if retry_after is not None else 300.0
+            suffix=' after one bounded retry' if retried else ' and Retry-After exceeds the retry safety cap'
+            _store_rate_limit_cooldown(rate_limit_path,source_id,cooldown)
+            raise PublicFeedRateLimited('Source returned HTTP 429'+suffix,retry_after_seconds=cooldown)
+    response.raise_for_status()
+    return response
+
+
+def _api_json(client, url, interval, params=None, robots_checked=False, resume_state=None):
     if not robots_checked:
         check_robots(client, url, interval)
     response = client.get(url, params=params, follow_redirects=False)
@@ -268,12 +372,29 @@ def _api_json(client, url, interval, params=None, robots_checked=False):
         check_robots(client, target, interval)
         response = client.get(target, follow_redirects=False)
     if response.status_code == 429:
-        raise PublicFeedRateLimited('Public feed returned HTTP 429; stopped without retry')
+        retry_after = _parse_retry_after(response.headers.get('Retry-After'))
+        wait = _retry_after_seconds(response.headers.get('Retry-After'))
+        retried = False
+        if wait is not None:
+            time.sleep(wait)
+            retried = True
+            response = client.get(url, params=params, follow_redirects=False)
+            if response.is_redirect:
+                target = urljoin(str(response.url), response.headers.get('location', ''))
+                if urlsplit(target).scheme != 'https' or urlsplit(target).netloc != urlsplit(url).netloc:
+                    raise RuntimeError('Public feed redirect must remain HTTPS on the verified source host')
+                check_robots(client, target, interval)
+                response = client.get(target, follow_redirects=False)
+        if response.status_code == 429:
+            suffix = ' after one bounded retry' if retried else ' and Retry-After exceeds the retry safety cap'
+            retry_after = _parse_retry_after(response.headers.get('Retry-After')) or retry_after
+            cooldown = max(60.0, retry_after) if retry_after is not None else 300.0
+            raise PublicFeedRateLimited('Public feed returned HTTP 429' + suffix, resume_state, cooldown)
     response.raise_for_status()
     return response.json(), response.status_code
 
 
-def collect_public_source(source, client, interval=1, max_pages=500):
+def collect_public_source(source, client, interval=1, max_pages=500, resume_state=None, checkpoint_path=None):
     """Fetch a documented public feed, respecting robots, provider pagination and conservative limits."""
     source_id = source['id']
     if source_id not in PUBLIC_FEEDS or source.get('status') != 'integrated':
@@ -282,10 +403,49 @@ def collect_public_source(source, client, interval=1, max_pages=500):
     result = CollectedJobs()
     seen = set()
     url = PUBLIC_FEEDS[source_id]
+    rate_path = Path(checkpoint_path).with_suffix(Path(checkpoint_path).suffix + '.rate-limit.json') if checkpoint_path else None
+    if rate_path and rate_path.is_file():
+        cooldown = json.loads(rate_path.read_text(encoding='utf-8'))
+        if cooldown.get('source_id') != source_id:
+            raise ValueError('Public source rate-limit checkpoint identity mismatch')
+        remaining = float(cooldown.get('blocked_until', 0)) - time.time()
+        if remaining > 0:
+            raise PublicFeedRateLimited('Public source cooldown is active; endpoint request skipped',
+                                        retry_after_seconds=remaining)
+        rate_path.unlink(missing_ok=True)
+
+    def request_page(*args, **kwargs):
+        try:
+            return _api_json(*args, **kwargs)
+        except PublicFeedRateLimited as exc:
+            if rate_path:
+                rate_path.parent.mkdir(parents=True, exist_ok=True)
+                rate_path.write_text(json.dumps({'source_id':source_id,
+                    'blocked_until':time.time() + (exc.retry_after_seconds or 300)}), encoding='utf-8')
+            raise
+
     check_robots(client, url, delay)
     checked_hosts = {urlsplit(url).hostname}
-    cursor = None
-    page = 1
+    result.checkpoint_path = checkpoint_path
+    if checkpoint_path and Path(checkpoint_path).is_file():
+        saved = json.loads(Path(checkpoint_path).read_text(encoding='utf-8'))
+        if saved.get('source_id') != source_id:
+            raise ValueError('Public source checkpoint identity mismatch')
+        result.extend(Job.model_validate(item) for item in saved.get('jobs', []))
+        result.expired_postings = [Job.model_validate(item) for item in saved.get('expired_postings', [])]
+        result.published_count = int(saved.get('published_count', 0))
+        result.pages_fetched = int(saved.get('pages_fetched', 0))
+        result.expired_count = int(saved.get('expired_count', 0))
+        seen.update(job.source_id for job in result)
+        cursor = (saved.get('next_state') or {}).get('cursor')
+        page = int((saved.get('next_state') or {}).get('page', 1))
+        if saved.get('complete'):
+            result.pagination_complete = True
+            return result
+    else:
+        cursor = (resume_state or {}).get('cursor')
+        page = int((resume_state or {}).get('page', 1))
+    pages_this_run = 0
     while True:
         if source_id == 'himalayas':
             params = {'limit': 20}
@@ -294,22 +454,23 @@ def collect_public_source(source, client, interval=1, max_pages=500):
             if urlsplit(url).hostname not in checked_hosts:
                 check_robots(client, url, delay)
                 checked_hosts.add(urlsplit(url).hostname)
-            payload, status = _api_json(client, url, delay, params=params, robots_checked=True)
+            payload, status = request_page(client, url, delay, params=params, robots_checked=True, resume_state={'cursor':cursor,'page':page})
             items = payload.get('jobs') if isinstance(payload, dict) else None
         elif source_id == 'arbeitnow':
             query = {'page': page}
             if urlsplit(url).hostname not in checked_hosts:
                 check_robots(client, url, delay)
                 checked_hosts.add(urlsplit(url).hostname)
-            payload, status = _api_json(client, url, delay, params=query, robots_checked=True)
+            payload, status = request_page(client, url, delay, params=query, robots_checked=True, resume_state={'cursor':cursor,'page':page})
             items = payload.get('data') if isinstance(payload, dict) else None
         else:
-            payload, status = _api_json(client, url, delay, robots_checked=True)
+            payload, status = request_page(client, url, delay, robots_checked=True, resume_state={'cursor':cursor,'page':page})
             items = [x for x in payload if isinstance(x, dict) and x.get('id') and x.get('position')] if isinstance(payload, list) else None
         if not isinstance(items, list):
             raise ValueError('Public feed response did not contain a job list')
         result.http_status = status
         result.pages_fetched += 1
+        pages_this_run += 1
         result.published_count += len(items)
         for index, item in enumerate(items):
             try:
@@ -333,12 +494,15 @@ def collect_public_source(source, client, interval=1, max_pages=500):
                 message = f'{source_id}: malformed posting at index {index} on page {page}; skipped'
                 result.warnings.append(message)
                 log.warning(message)
+        next_state = None
         if source_id == 'remoteok':
+            _write_public_checkpoint(checkpoint_path, source_id, result, None, True)
             break
         if source_id == 'arbeitnow':
             links = payload.get('links') or {}
             next_url = links.get('next') if isinstance(links, dict) else None
             if not next_url:
+                _write_public_checkpoint(checkpoint_path, source_id, result, None, True)
                 break
             parsed = urlsplit(next_url)
             allowed_hosts = {'www.arbeitnow.com', 'www.arbeitnow.nl', 'www.arbeitnow.co.uk'}
@@ -348,20 +512,26 @@ def collect_public_source(source, client, interval=1, max_pages=500):
                     or not query['page'].isdigit()):
                 raise RuntimeError('Arbeitnow pagination link escaped its documented regional API endpoints')
             page += 1
-            if page > max_pages:
+            if pages_this_run >= max_pages:
                 result.pagination_complete = False
+                _write_public_checkpoint(checkpoint_path, source_id, result, {'cursor':None,'page':page}, False)
                 break
             url = next_url
+            next_state = {'cursor': None, 'page': page}
         else:
             cursor = payload.get('nextCursor')
             if not cursor:
+                _write_public_checkpoint(checkpoint_path, source_id, result, None, True)
                 break
             if cursor in seen:
                 raise RuntimeError('Himalayas returned a repeated pagination cursor')
             seen.add(cursor)
-            if page >= max_pages:
+            if pages_this_run >= max_pages:
                 result.pagination_complete = False
+                _write_public_checkpoint(checkpoint_path, source_id, result, {'cursor':cursor, 'page':page+1}, False)
                 break
             page += 1
+            next_state = {'cursor': cursor, 'page': page}
+        _write_public_checkpoint(checkpoint_path, source_id, result, next_state, False)
         time.sleep(delay)
     return result

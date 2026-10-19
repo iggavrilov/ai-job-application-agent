@@ -42,7 +42,7 @@ def test_database_error_does_not_poison_next_board(tmp_path,job,monkeypatch):
     monkeypatch.setattr(d,'load_boards',lambda:([
         {'company':'Mock','platform':'lever','board':'one','enabled':True},
         {'company':'Mock','platform':'lever','board':'two','enabled':True}],[]))
-    monkeypatch.setattr(d,'collect',lambda *args:[job])
+    monkeypatch.setattr(d,'collect',lambda *args,**kwargs:[job])
     original=d.upsert_job
     calls=[]
     def broken_once(session,posting,source):
@@ -86,7 +86,7 @@ def test_manual_status_survives_repeated_discovery(tmp_path,monkeypatch,job,stat
     monkeypatch.setattr(d,'database',lambda:db)
     board={'company':'Mock','platform':'lever','board':'mock','enabled':True}
     monkeypatch.setattr(d,'load_boards',lambda:([board],[]))
-    monkeypatch.setattr(d,'collect',lambda *args:[job])
+    monkeypatch.setattr(d,'collect',lambda *args,**kwargs:[job])
     with db() as session:
         company=Company(name='Mock');session.add(company);session.flush()
         source=Source(company_id=company.id,platform='lever',board='mock');session.add(source);session.flush()

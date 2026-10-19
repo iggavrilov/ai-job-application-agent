@@ -132,7 +132,7 @@ def test_discovery_continues_and_history(tmp_path,job,monkeypatch):
     db=database('sqlite:///'+str(tmp_path/'runs.db'))
     monkeypatch.setattr(d,'database',lambda:db)
     calls=[]
-    def fake(board,client,interval):
+    def fake(board,client,interval,**kwargs):
         calls.append(board['platform'])
         if len(calls)==1:
             raise RuntimeError('board offline')

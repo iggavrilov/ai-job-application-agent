@@ -122,6 +122,34 @@ with factory() as session:
     for col,(label,value) in zip(cols,metrics):
         col.metric(label,value)
     st.caption(f'Main recommendations: {len(records)}; excluded/audit records: {len(all_records)-len(records)}. These counts do not establish suitability or hiring eligibility.')
+    with st.expander('Discovery quality and employer diversity', expanded=True):
+        latest_diagnostic = session.scalar(select(SearchDiagnostic).order_by(SearchDiagnostic.id.desc()))
+        discovery_quality = json.loads(latest_diagnostic.payload) if latest_diagnostic else {}
+        totals = discovery_quality.get('totals', {})
+        clarified = {'Potentially Eligible — Needs Review', 'Eligible If Relocating', 'Needs Review'}
+        quality_metrics = [
+            ('Postings fetched (latest run)', runs[0].discovered if runs else 0),
+            ('Unique Software QA records', totals.get('unique_records', len(all_records))),
+            ('Professionally suitable', totals.get('unique_main_professionally_suitable', sum(r['Professional fit'] in {'Strong Match', 'Good Match'} for r in records))),
+            ('Geographically eligible', totals.get('unique_main_confirmed_geographically_eligible', sum(r['Eligibility assessment'] == 'Confirmed Eligible' for r in records))),
+            ('Needs eligibility clarification', totals.get('unique_main_needs_eligibility_clarification', sum(r['Eligibility assessment'] in clarified for r in records))),
+            ('Excluded / audit records', totals.get('unique_excluded_records', len(all_records) - len(records))),
+            ('Employers represented', totals.get('unique_employers_represented', len({r['Company'] for r in records}))),
+        ]
+        quality_cols = st.columns(4)
+        for col, (label, value) in zip(quality_cols, quality_metrics):
+            col.metric(label, value)
+        if discovery_quality:
+            st.caption(f"Sources attempted: {totals.get('active_sources', 0)} · successful: {totals.get('committed_boards', 0)} · incomplete/failed: {totals.get('failed_boards', 0)}. Incomplete scans are not presented as complete coverage.")
+        if records:
+            employer_counts = pd.DataFrame([
+                {'Employer': name, 'Recommended vacancies': count}
+                for name, count in sorted(
+                    __import__('collections').Counter(r['Company'] for r in records).items(),
+                    key=lambda item: (-item[1], item[0].casefold()))
+            ])
+            st.caption('Employer concentration is shown for transparency; legitimate vacancies from the same employer remain visible.')
+            st.table(employer_counts)
     view = st.sidebar.selectbox('Vacancy view',['Recommendations','Excluded / audit','All stored vacancies'])
     visible = records if view == 'Recommendations' else [r for r in all_records if not r['_match'].in_main_recommendations] if view == 'Excluded / audit' else all_records
     current_selection = st.session_state.get('selected_vacancy_id')
