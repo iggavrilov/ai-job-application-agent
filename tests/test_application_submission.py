@@ -12,6 +12,7 @@ from agent.application_submission import (
     ApplicationSubmissionError,
     ReviewInvalidatedError,
     SubmissionUncertainError,
+    _has_reliable_submission_confirmation,
     approve_and_submit,
     build_review_snapshot,
     load_application_review,
@@ -278,6 +279,259 @@ def test_uncertain_submission_is_never_automatically_retried(tmp_path, monkeypat
         approve_and_submit(7, fingerprint, candidate_confirmed=True,
                            root=tmp_path, submitter=uncertain)
     assert calls == [1]
+
+
+def test_confirmation_text_alone_does_not_mark_application_submitted():
+    official = 'https://job-boards.eu.greenhouse.io/synthetic/confirmation'
+    assert not _has_reliable_submission_confirmation(
+        official, 'Thank you for applying', application_form_visible=True)
+    assert not _has_reliable_submission_confirmation(
+        official, 'Application is still being processed', application_form_visible=False)
+    assert not _has_reliable_submission_confirmation(
+        'https://example.invalid/confirmation', 'Thank you for applying',
+        application_form_visible=False)
+    assert _has_reliable_submission_confirmation(
+        official, 'Thank you for applying', application_form_visible=False)
+
+
+def test_delayed_or_ambiguous_response_stays_uncertain_and_cannot_retry(tmp_path, monkeypatch):
+    _, fingerprint = _write_ready_application(tmp_path)
+    _patch_sources(monkeypatch, tmp_path)
+    calls = []
+
+    def delayed_or_ambiguous(*args):
+        calls.append('attempted')
+        # A delayed response that has not produced the reliable confirmation
+        # contract must never be translated into a successful application state.
+        raise SubmissionUncertainError('Synthetic delayed Greenhouse response.')
+
+    state = approve_and_submit(7, fingerprint, candidate_confirmed=True,
+                               root=tmp_path, submitter=delayed_or_ambiguous)
+    assert state['status'] == 'Submission Uncertain'
+    with pytest.raises(ApplicationSubmissionError, match='fully prepared'):
+        approve_and_submit(7, fingerprint, candidate_confirmed=True,
+                           root=tmp_path, submitter=delayed_or_ambiguous)
+    assert calls == ['attempted']
+
+
+def test_browser_crash_after_submit_dispatch_is_uncertain_and_not_retried(tmp_path, monkeypatch):
+    _, fingerprint = _write_ready_application(tmp_path)
+    _patch_sources(monkeypatch, tmp_path)
+    calls = []
+
+    def crashed_browser(*args):
+        calls.append('submit-clicked')
+        raise SubmissionUncertainError('Synthetic browser crash after submit click.')
+
+    state = approve_and_submit(7, fingerprint, candidate_confirmed=True,
+                               root=tmp_path, submitter=crashed_browser)
+    assert state['status'] == 'Submission Uncertain'
+    with pytest.raises(ApplicationSubmissionError, match='fully prepared'):
+        approve_and_submit(7, fingerprint, candidate_confirmed=True,
+                           root=tmp_path, submitter=crashed_browser)
+    assert calls == ['submit-clicked']
+
+
+class _SyntheticSubmitControl:
+    def __init__(self, page):
+        self.page = page
+
+    def count(self):
+        return 1
+
+    def is_visible(self):
+        return True
+
+    def is_enabled(self):
+        return self.page.submit_enabled
+
+    def click(self, timeout):
+        self.page.clicks += 1
+        if self.page.click_error:
+            raise RuntimeError('synthetic browser crash after submit click')
+
+
+class _SyntheticGreenhousePage:
+    def __init__(self, *, initial_body='', confirmation_text='', form_visible=False,
+                 click_error=False, final_url=SYNTHETIC_URL):
+        self.initial_body = initial_body
+        self.confirmation_text = confirmation_text
+        self.form_visible = form_visible
+        self.click_error = click_error
+        self.url = final_url
+        self.submit_enabled = False
+        self.clicks = 0
+        self.closed = False
+        self.close_error = False
+        self.delayed_response_error = False
+        self.screenshots = []
+
+    def add_init_script(self, script):
+        assert 'jobAgentApprovedSubmission' in script
+
+    def goto(self, url, wait_until, timeout):
+        assert url == SYNTHETIC_URL
+        assert wait_until == 'domcontentloaded'
+        return SimpleNamespace(status=200)
+
+    def wait_for_timeout(self, timeout):
+        if timeout == 3000 and self.delayed_response_error:
+            raise TimeoutError('synthetic delayed Greenhouse response')
+        return None
+
+    def evaluate(self, script):
+        if 'window.__jobAgentApprovedSubmission = true' in script:
+            self.submit_enabled = True
+            return None
+        if 'applicationFormVisible' in script:
+            return {'text': self.confirmation_text,
+                    'applicationFormVisible': self.form_visible}
+        if 'document.body ? document.body.innerText' in script:
+            return self.initial_body
+        raise AssertionError('Unexpected synthetic page evaluation')
+
+    def locator(self, selector):
+        assert selector == 'button[type="submit"]'
+        return _SyntheticSubmitControl(self)
+
+    def screenshot(self, path, full_page):
+        self.screenshots.append((path, full_page))
+
+
+class _SyntheticBrowser:
+    def __init__(self, page):
+        self.page = page
+        self.closed = False
+
+    def new_page(self, accept_downloads):
+        assert accept_downloads is False
+        return self.page
+
+    def close(self):
+        if self.page.close_error:
+            raise RuntimeError('synthetic browser cleanup failure')
+        self.closed = True
+
+
+class _SyntheticPlaywrightContext:
+    def __init__(self, browser):
+        self.browser = browser
+        self.chromium = SimpleNamespace(launch=self._launch)
+
+    def _launch(self, channel, headless):
+        assert channel == 'msedge'
+        assert headless is False
+        return self.browser
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def _run_synthetic_live_submit(monkeypatch, tmp_path, page, *, changed_snapshot=False):
+    import playwright.sync_api
+    import agent.application_submission as submission
+
+    browser = _SyntheticBrowser(page)
+    monkeypatch.setattr(playwright.sync_api, 'sync_playwright',
+                        lambda: _SyntheticPlaywrightContext(browser))
+    synthetic_results = [FieldResult('Synthetic required field', 'Completed',
+                                     'Verified value: Synthetic answer')]
+    monkeypatch.setitem(submission.ADAPTERS, 'greenhouse',
+                        SimpleNamespace(fill=lambda *args: synthetic_results))
+    monkeypatch.setattr(submission, '_reject_explicitly_ineligible', lambda *args: None)
+    monkeypatch.setattr(submission, '_form_dom_snapshot', lambda page: {'forms': [], 'fields': []})
+    state_path = tmp_path / 'private' / 'application_runs' / 'job-7' / 'application_state.json'
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({'job_id': 7, 'status': 'Submitting'}), encoding='utf-8')
+    monkeypatch.setattr(submission, '_private_paths',
+                        lambda job_id, root: (state_path.parent,
+                                              state_path.with_name('application_preview.json'),
+                                              state_path))
+    snap = _snapshot()
+    if changed_snapshot:
+        snap['form_data']['location_city'] = 'Changed Synthetic City'
+    monkeypatch.setattr(submission, 'build_review_snapshot', lambda *args: snap)
+    job = SimpleNamespace(platform='greenhouse', url=SYNTHETIC_URL)
+    outcome = lambda: submission._submit_live_application(
+        7, job, object(), object(), object(), tmp_path / 'synthetic-cv.pdf',
+        {}, review_fingerprint(_snapshot()), tmp_path)
+    return outcome, page, browser, state_path
+
+
+def test_synthetic_greenhouse_changed_form_stops_before_submit(tmp_path, monkeypatch):
+    page = _SyntheticGreenhousePage()
+    run, page, browser, state_path = _run_synthetic_live_submit(
+        monkeypatch, tmp_path, page, changed_snapshot=True)
+    with pytest.raises(ReviewInvalidatedError, match='reviewed snapshot'):
+        run()
+    assert page.clicks == 0
+    assert browser.closed
+    assert json.loads(state_path.read_text(encoding='utf-8'))['status'] == 'Needs Review'
+
+
+def test_synthetic_greenhouse_captcha_stops_before_submit(tmp_path, monkeypatch):
+    page = _SyntheticGreenhousePage(initial_body='Please verify you are human')
+    run, page, browser, _ = _run_synthetic_live_submit(monkeypatch, tmp_path, page)
+    with pytest.raises(ApplicationSubmissionError, match='challenge appeared'):
+        run()
+    assert page.clicks == 0
+    assert browser.closed
+
+
+@pytest.mark.parametrize('challenge', [
+    'Sign in to continue',
+    'Authentication required',
+    'Please verify your identity',
+])
+def test_synthetic_greenhouse_authentication_challenge_stops_before_submit(
+        tmp_path, monkeypatch, challenge):
+    page = _SyntheticGreenhousePage(initial_body=challenge)
+    run, page, browser, _ = _run_synthetic_live_submit(monkeypatch, tmp_path, page)
+    with pytest.raises(ApplicationSubmissionError, match='challenge appeared'):
+        run()
+    assert page.clicks == 0
+    assert browser.closed
+
+
+def test_synthetic_greenhouse_ambiguous_confirmation_is_uncertain(tmp_path, monkeypatch):
+    page = _SyntheticGreenhousePage(confirmation_text='Thank you for applying', form_visible=True)
+    run, page, browser, _ = _run_synthetic_live_submit(monkeypatch, tmp_path, page)
+    with pytest.raises(SubmissionUncertainError, match='clear confirmation'):
+        run()
+    assert page.clicks == 1
+    assert browser.closed
+
+
+def test_synthetic_greenhouse_browser_crash_and_cleanup_failure_remain_uncertain(tmp_path, monkeypatch):
+    page = _SyntheticGreenhousePage(click_error=True)
+    page.close_error = True
+    run, page, browser, _ = _run_synthetic_live_submit(monkeypatch, tmp_path, page)
+    with pytest.raises(SubmissionUncertainError, match='may have reached'):
+        run()
+    assert page.clicks == 1
+
+
+def test_synthetic_greenhouse_delayed_response_is_uncertain(tmp_path, monkeypatch):
+    page = _SyntheticGreenhousePage()
+    page.delayed_response_error = True
+    run, page, browser, _ = _run_synthetic_live_submit(monkeypatch, tmp_path, page)
+    with pytest.raises(SubmissionUncertainError, match='may have reached'):
+        run()
+    assert page.clicks == 1
+    assert browser.closed
+
+
+def test_synthetic_greenhouse_reliable_confirmation_returns_submitted(tmp_path, monkeypatch):
+    page = _SyntheticGreenhousePage(confirmation_text='Thank you for applying',
+                                    form_visible=False)
+    run, page, browser, _ = _run_synthetic_live_submit(monkeypatch, tmp_path, page)
+    assert run() == 'Submitted'
+    assert page.clicks == 1
+    assert browser.closed
+    assert len(page.screenshots) == 1
 
 
 def test_live_form_snapshot_mismatch_returns_to_needs_review(tmp_path, monkeypatch):

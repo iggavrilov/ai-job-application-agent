@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from agent.application_workflow import (
     ADAPTERS,
     ApplicationPreparationError,
+    _access_challenge_detected,
     _form_dom_snapshot,
     _load_profile,
     _load_shortlisted_job,
@@ -343,6 +344,34 @@ def _approval_guard_script() -> str:
     })();"""
 
 
+def _has_reliable_submission_confirmation(final_url: str, page_text: str,
+                                          application_form_visible: bool) -> bool:
+    """Require an official-host confirmation page with the application form gone.
+
+    Greenhouse can respond asynchronously or show generic success wording elsewhere
+    on the page. If the form remains visible, text alone is not enough evidence;
+    callers keep the attempt in Submission Uncertain instead.
+    """
+    parsed = urlparse(final_url)
+    if (parsed.scheme != 'https'
+            or parsed.hostname not in {'job-boards.eu.greenhouse.io', 'boards.greenhouse.io'}
+            or application_form_visible):
+        return False
+    return bool(re.search(
+        r'\b(thank you for applying|application has been submitted|application was submitted|your application is submitted)\b',
+        page_text,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _close_browser_safely(browser) -> None:
+    """Best-effort cleanup must never replace the submission outcome."""
+    try:
+        browser.close()
+    except Exception:
+        pass
+
+
 def _submit_live_application(job_id: int, job, candidate, preferences, answers, cv_path: Path,
                              mapped: dict, reviewed_fingerprint: str, root: Path) -> str:
     from playwright.sync_api import sync_playwright
@@ -360,15 +389,15 @@ def _submit_live_application(job_id: int, job, candidate, preferences, answers, 
         response = page.goto(str(job.url), wait_until='domcontentloaded', timeout=60_000)
         page.wait_for_timeout(1000)
         if response is None or response.status >= 400:
-            browser.close()
+            _close_browser_safely(browser)
             raise ApplicationSubmissionError('The official application page did not load; no form was submitted.')
         if urlparse(page.url).hostname not in {'job-boards.eu.greenhouse.io', 'boards.greenhouse.io'}:
-            browser.close()
+            _close_browser_safely(browser)
             raise ApplicationSubmissionError('The application redirected outside the official Greenhouse hosts.')
         body = (page.evaluate("document.body ? document.body.innerText : ''") or '').casefold()
-        if any(term in body for term in ('captcha', 'verify you are human', 'access denied', 'security check')):
-            browser.close()
-            raise ApplicationSubmissionError('A security challenge appeared; no application was submitted.')
+        if _access_challenge_detected(body):
+            _close_browser_safely(browser)
+            raise ApplicationSubmissionError('A security or authentication challenge appeared; no application was submitted.')
         try:
             results = ADAPTERS[job.platform.casefold()].fill(page, candidate, cv_path, preferences, answers)
             if any(result.status == 'Needs candidate input' for result in results):
@@ -377,11 +406,11 @@ def _submit_live_application(job_id: int, job, candidate, preferences, answers, 
             fresh_snapshot = build_review_snapshot(job_id, job, mapped, answers, cv_path, results,
                                                   form_dom_snapshot)
             if review_fingerprint(fresh_snapshot) != reviewed_fingerprint:
-                _, _, state_path = _application_files(job_id, root)
+                _, state_path = _application_files(job_id, root)
                 state = json.loads(state_path.read_text(encoding='utf-8'))
                 _save_state(state_path, state, 'Needs Review', approval=None,
                             state_note='The live form values differ from the approved snapshot; no application was submitted.')
-                browser.close()
+                _close_browser_safely(browser)
                 raise ReviewInvalidatedError('The live form differs from the reviewed snapshot; no application was submitted.')
             submit = page.locator('button[type="submit"]')
             if submit.count() != 1 or not submit.is_visible() or submit.is_enabled():
@@ -404,19 +433,31 @@ def _submit_live_application(job_id: int, job, candidate, preferences, answers, 
                     f'The submit action may have reached the employer ({type(exc).__name__}); check the employer site before any retry.'
                 ) from None
             page.wait_for_timeout(3000)
-            final_body = (page.evaluate("document.body ? document.body.innerText : ''") or '').casefold()
-            success = re.search(r'\b(thank you for applying|application has been submitted|application was submitted|your application is submitted)\b', final_body)
-            if success:
+            confirmation = page.evaluate("""() => {
+              const isVisible = element => {
+                const style = getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.visibility !== 'hidden' && style.display !== 'none'
+                  && rect.width > 0 && rect.height > 0;
+              };
+              return {
+                text: document.body ? document.body.innerText : '',
+                applicationFormVisible: Array.from(document.forms).some(isVisible),
+              };
+            }""")
+            if _has_reliable_submission_confirmation(
+                    page.url, confirmation.get('text', ''),
+                    bool(confirmation.get('applicationFormVisible'))):
                 _, preview_path, _ = _private_paths(root, job_id)
                 page.screenshot(path=str(preview_path.with_name('submission_confirmation.png')), full_page=True)
-                browser.close()
+                _close_browser_safely(browser)
                 return 'Submitted'
             raise SubmissionUncertainError('The employer page did not show a clear confirmation after submission; check the employer site and do not retry automatically.')
         except (ApplicationSubmissionError, SubmissionUncertainError):
-            browser.close()
+            _close_browser_safely(browser)
             raise
         except Exception as exc:
-            browser.close()
+            _close_browser_safely(browser)
             if locals().get('submit_dispatched', False):
                 raise SubmissionUncertainError(
                     f'The submit action may have reached the employer ({type(exc).__name__}); check the employer site before any retry.'

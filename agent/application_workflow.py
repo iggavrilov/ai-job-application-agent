@@ -143,6 +143,16 @@ def _reject_explicitly_ineligible(job_id: int, root: Path) -> None:
             raise ApplicationPreparationError('Application preparation is disabled for an explicitly ineligible vacancy.')
 
 
+def _access_challenge_detected(page_text: str) -> bool:
+    """Stop on bot protection or an authentication gate; never work around it."""
+    text = page_text.casefold()
+    return any(phrase in text for phrase in (
+        'captcha', 'verify you are human', 'access denied', 'security check',
+        'sign in to continue', 'log in to continue', 'authentication required',
+        'login required', 'verify your identity', 'multi-factor authentication',
+    ))
+
+
 def _name_parts(name: str) -> tuple[str, str]:
     parts = name.strip().split()
     if len(parts) < 2:
@@ -605,9 +615,9 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
         if not body.strip():
             browser.close()
             raise ApplicationPreparationError('The official page loaded without readable form content; preparation stopped.')
-        if any(term in body for term in ('captcha', 'verify you are human', 'access denied', 'security check')):
+        if _access_challenge_detected(body):
             browser.close()
-            raise ApplicationPreparationError('A security challenge is visible. Preparation stopped; complete it manually if appropriate.')
+            raise ApplicationPreparationError('A security or authentication challenge is visible. Preparation stopped; resolve it manually if appropriate.')
         try:
             adapter = ADAPTERS[job.platform.casefold()]
             results = adapter.fill(page, candidate, cv_path, preferences, application_answers)
