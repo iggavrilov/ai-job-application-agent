@@ -74,6 +74,41 @@ def test_role_focus_reorders_skill_categories_without_changing_facts(candidate):
     validate_cv_document(bitdefender, candidate)
 
 
+def test_tailoring_prioritizes_relevant_outcomes_and_reduces_repeated_bullets(candidate):
+    facts = [
+        "Created test plans for routine feature releases.",
+        "Prepared manual regression test cases for website updates.",
+        "Reduced regression testing from approximately one week to a few hours through automation.",
+        "Expanded automated website coverage and identified previously undetected HTTP 500 errors.",
+        "Investigated defects and collaborated with developers on fixes.",
+        "Verified fixes after successful deployment.",
+        "Updated QA documentation for recurring release workflows.",
+        "Attended regular project planning meetings.",
+    ]
+    first_role = candidate.experience[0].model_copy(update={"bullets": facts})
+    tailored_candidate = candidate.model_copy(update={"experience": [first_role, *candidate.experience[1:]]})
+    master = render_cv(tailored_candidate)
+    tailored = tailor_cv(
+        master, tailored_candidate, target_title="Senior QA Automation Engineer",
+        description="Automated regression testing, automation coverage and regression tests",
+    )
+    role_section = _section(tailored, "Professional experience")
+    first_role_section = role_section.split("### ", 2)[1].split("### ", 1)[0]
+    emitted = [line[2:] for line in first_role_section.splitlines() if line.startswith("- ")]
+    assert len(emitted) == 6
+    assert emitted[0] == facts[2]
+    assert facts[3] in emitted
+    assert "### " + candidate.experience[0].title in role_section
+    assert len([line for line in _section(master, "Professional experience").splitlines()
+                if line.startswith("- ")]) == sum(len(role.bullets) for role in tailored_candidate.experience)
+    validate_cv_document(tailored, tailored_candidate, require_complete_experience=False)
+    with pytest.raises(CvValidationError, match="missing or unsupported profile facts"):
+        validate_cv_document(tailored, tailored_candidate)
+    with pytest.raises(CvValidationError, match="missing or unsupported profile facts"):
+        validate_cv_document(tailored.replace(emitted[0], "Invented automation achievement."),
+                             tailored_candidate, require_complete_experience=False)
+
+
 def test_validator_rejects_target_labels_and_work_authorization(candidate):
     master = render_cv(candidate)
     with pytest.raises(CvValidationError, match="internal profile or AI commentary"):

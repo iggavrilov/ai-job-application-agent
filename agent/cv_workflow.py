@@ -68,16 +68,40 @@ def _safe_inline(value: str) -> str:
 
 
 def _tokens(text: str) -> set[str]:
-    return set(re.findall(r'[a-z0-9+#.]+', text.casefold()))
+    stop_words = {'a', 'an', 'and', 'by', 'for', 'from', 'in', 'of', 'on', 'the', 'through', 'to', 'with'}
+    return set(re.findall(r'[a-z0-9+#.]+', text.casefold())) - stop_words
 
 
-def _rank(items: list[str], description: str) -> list[str]:
+_OUTCOME_STEMS = (
+    'reduc', 'increas', 'expand', 'identif', 'discover', 'resolv', 'verif',
+    'deploy', 'improv', 'deliver',
+)
+
+
+def _is_outcome(item: str) -> bool:
+    return any(re.search(r'\b' + stem + r'\w*\b', item.casefold())
+               for stem in _OUTCOME_STEMS)
+
+
+def _rank(items: list[str], description: str, *, limit: int | None = None) -> list[str]:
     words = _tokens(description)
     normalized_description = _normal(description)
     indexed = list(enumerate(items))
-    return [item for _, item in sorted(indexed, key=lambda pair: (
+    ranked = sorted(indexed, key=lambda pair: (
         -(1 if _normal(pair[1]) in normalized_description else 0),
-        -len(_tokens(pair[1]) & words), pair[0]))]
+        -len(_tokens(pair[1]) & words),
+        -(1 if _is_outcome(pair[1]) else 0),
+        pair[0]))
+    if limit is not None:
+        ranked = ranked[:limit]
+    return [item for _, item in ranked]
+
+
+def _tailored_bullets(items: list[str], description: str, limit: int = 6) -> list[str]:
+    ranked = _rank(items, description)
+    outcomes = [item for item in ranked if _is_outcome(item)]
+    other = [item for item in ranked if not _is_outcome(item)]
+    return (outcomes + other)[:limit]
 
 
 _GROUP_TERMS = {
@@ -143,7 +167,9 @@ def render_cv(candidate: Candidate, *, target_title: str = '', description: str 
         lines.append(f'### {role.title} | {role.company} | {role.dates}')
         if role.location:
             lines.append(f'**Location:** {role.location}')
-        bullets = _rank(role.bullets, description) if description else role.bullets
+        # Keep Master CV comprehensive. Tailored CVs prioritize relevant outcomes and
+        # omit lower-priority repetitive responsibilities while retaining exact source facts.
+        bullets = _tailored_bullets(role.bullets, description, limit=6) if description else role.bullets
         lines.extend(f'- {bullet}' for bullet in bullets)
         lines.append('')
     lines += ['## Technical skills', '']
@@ -170,7 +196,7 @@ def _bullets(section: str) -> list[str]:
     return [line[2:].strip() for line in section.splitlines() if line.startswith('- ')]
 
 
-def validate_cv_document(text: str, candidate: Candidate) -> None:
+def validate_cv_document(text: str, candidate: Candidate, *, require_complete_experience: bool = True) -> None:
     lowered = text.casefold()
     if any(re.search(pattern, lowered, re.I) for pattern in _INTERNAL_PATTERNS):
         raise CvValidationError('CV contains internal profile or AI commentary')
@@ -213,7 +239,12 @@ def validate_cv_document(text: str, candidate: Candidate) -> None:
     actual_bullets = _bullets(experience)
     allowed_locations = {f'**Location:** {entry.location}' for entry in candidate.experience if entry.location}
     actual_locations = {line for line in experience.splitlines() if line.startswith('**Location:** ')}
-    if actual_headers != expected_headers or Counter(actual_bullets) != Counter(expected_bullets):
+    actual_counts = Counter(actual_bullets)
+    expected_counts = Counter(expected_bullets)
+    unsupported_bullets = actual_counts - expected_counts
+    missing_bullets = expected_counts - actual_counts
+    if (actual_headers != expected_headers or unsupported_bullets
+            or (require_complete_experience and missing_bullets)):
         raise CvValidationError('Professional experience contains missing or unsupported profile facts')
     if actual_locations != allowed_locations:
         raise CvValidationError('Professional experience contains unsupported locations')
@@ -273,7 +304,7 @@ def tailor_cv(master_text: str, candidate: Candidate, *, target_title: str,
               description: str) -> str:
     validate_cv_document(master_text, candidate)
     tailored = render_cv(candidate, target_title=target_title, description=description)
-    validate_cv_document(tailored, candidate)
+    validate_cv_document(tailored, candidate, require_complete_experience=False)
     return tailored
 
 
