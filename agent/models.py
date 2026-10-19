@@ -27,6 +27,7 @@ class Candidate(BaseModel):
     languages: list[str] = Field(default_factory=list)
     experience: list[CandidateExperience] = Field(default_factory=list)
     professional_summary: str = ''
+    professional_title: str = ''
     github: str = 'unknown'
     salary_expectations: str = 'unknown'
     citizenship: str = 'unknown'

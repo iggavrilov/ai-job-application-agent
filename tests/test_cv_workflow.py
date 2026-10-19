@@ -4,20 +4,21 @@ import pytest
 
 from agent.cv_workflow import (
     CvValidationError, render_cv, tailor_cv, validate_cv_document,
-    validate_private_git_policy, _section,
+    validate_private_git_policy, _section, _application_metadata,
 )
-from agent.models import Candidate, CandidateExperience
+from agent.models import Candidate, CandidateExperience, Job
 
 
 @pytest.fixture
 def candidate():
     return Candidate(
         name="Alex Example", location="Chișinău, Moldova", experience_years=10,
+        professional_title="Senior Quality Assurance Engineer",
         positions=["QA Engineer"], skills=["Manual QA", "Playwright", "SQL"],
         projects=[], certifications=["ISTQB Foundation"],
         education=["Bachelor’s degree in Computer Science — Example University"],
         languages=["English - B2"], github="https://github.com/example",
-        work_authorization="Authorized to work in Romania", email="unknown", telephone="unknown",
+        work_authorization="Authorized to work in Romania", email="alex@example.com", telephone="+37360000000",
         professional_summary="QA Engineer with 10 years of experience in web testing.",
         provenance="Synthetic test fixture.",
         experience=[CandidateExperience(
@@ -30,18 +31,26 @@ def candidate():
 def test_rendered_master_cv_is_complete_and_general(candidate):
     cv = render_cv(candidate)
     validate_cv_document(cv, candidate)
-    assert "Target employer" not in cv
+    assert cv.splitlines()[:2] == ["# Alex Example", "**Senior Quality Assurance Engineer**"]
+    assert "## Contact" in cv
+    assert "- Location: Chișinău, Moldova" in cv
+    assert "- Email: alex@example.com" in cv
+    assert "- Phone: +37360000000" in cv
+    assert "- GitHub: https://github.com/example" in cv
+    assert "Target employer" not in cv and "Target position" not in cv
     assert "Bitdefender" not in cv
+    assert "Authorized to work in Romania" not in cv
 
 
 def test_tailored_cv_reorders_verified_facts_without_copying_job_requirements(candidate):
     master = render_cv(candidate)
     tailored = tailor_cv(
-        master, candidate, target_title="Senior QA Engineer", target_employer="Bitdefender",
+        master, candidate, target_title="Senior QA Engineer",
         description="Python Java test automation 100% coverage Selenium API testing",
     )
     validate_cv_document(tailored, candidate)
-    assert "Target position" in tailored and "Bitdefender" in tailored
+    assert "Target position" not in tailored and "Target employer" not in tailored
+    assert "Bitdefender" not in tailored
     assert "Python" not in tailored and "Selenium" not in tailored and "100% coverage" not in tailored
     assert not __import__("re").search(r"\bJava\b", tailored, __import__("re").I)
 
@@ -49,11 +58,11 @@ def test_tailored_cv_reorders_verified_facts_without_copying_job_requirements(ca
 def test_role_focus_reorders_skill_categories_without_changing_facts(candidate):
     master = render_cv(candidate)
     xebia = tailor_cv(
-        master, candidate, target_title="Senior QA Automation Engineer", target_employer="Xebia CEE",
+        master, candidate, target_title="Senior QA Automation Engineer",
         description="Playwright API Java automation framework with manual testing, regression testing and QA test cases",
     )
     bitdefender = tailor_cv(
-        master, candidate, target_title="QA Engineer", target_employer="Bitdefender",
+        master, candidate, target_title="QA Engineer",
         description="Manual regression testing, exploratory testing and test cases",
     )
     def first_skill_group(document):
@@ -63,6 +72,28 @@ def test_role_focus_reorders_skill_categories_without_changing_facts(candidate):
     assert first_skill_group(bitdefender) == "Quality assurance"
     validate_cv_document(xebia, candidate)
     validate_cv_document(bitdefender, candidate)
+
+
+def test_validator_rejects_target_labels_and_work_authorization(candidate):
+    master = render_cv(candidate)
+    with pytest.raises(CvValidationError, match="internal profile or AI commentary"):
+        validate_cv_document(master.replace("## Contact", "Target employer: Example\n\n## Contact"), candidate)
+    with pytest.raises(CvValidationError, match="Work authorization belongs"):
+        validate_cv_document(master.replace("## Contact", "Authorized to work in Romania\n\n## Contact"), candidate)
+
+
+def test_target_information_is_saved_only_in_private_application_metadata(candidate):
+    job = Job(
+        title="Senior QA Automation Engineer", company="Xebia CEE", location="Remote",
+        description="Playwright QA", url="https://example.com/jobs/40", platform="test", source_id="40",
+    )
+    metadata = _application_metadata(40, job)
+    assert metadata == {
+        "job_id": 40, "employer": "Xebia CEE", "role": "Senior QA Automation Engineer",
+        "application_url": "https://example.com/jobs/40",
+    }
+    cv = render_cv(candidate, target_title=job.title, description=job.description)
+    assert "40" not in cv and "Xebia CEE" not in cv and job.title not in cv
 
 
 def test_reject_internal_ai_notes(candidate):
@@ -114,4 +145,8 @@ def test_private_outputs_are_git_ignored():
     validate_private_git_policy(root, [
         Path("candidate_profile.json"), Path("private/cv/master_cv.md"),
         Path("private/application_pilot/job-4-bitdefender-qa-engineer/cv_draft.md"),
+        Path("private/application_pilot/job-4-bitdefender-qa-engineer/cv.pdf"),
+        Path("private/application_pilot/job-4-bitdefender-qa-engineer/application_metadata.json"),
+        Path("private/application_pilot/job-40-xebia-cee-senior-qa-automation-engineer/cv_draft.md"),
+        Path("private/application_pilot/job-40-xebia-cee-senior-qa-automation-engineer/application_metadata.json"),
     ])
