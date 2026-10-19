@@ -141,7 +141,7 @@ def rule_assessment(job, candidate):
     if language_requirement:
         mandatory.append('Language proficiency requirement detected; candidate proficiency must be verified')
     degree_pattern = (
-        r'\b(?:bachelor[’\']?s?|master[’\']?s?|doctoral|ph\.?d\.?|university)\b.{0,60}\b(?:degree|computer science|engineering)\b|\bdegree\s+in\s+(?:computer science|software engineering|engineering)\b')
+        r'\bmba\b|\b(?:bachelor[’\']?s?|master[’\']?s?|doctoral|ph\.?d\.?|university)\b.{0,60}\b(?:degree|computer science|engineering)\b|\bdegree\s+in\s+(?:computer science|software engineering|engineering)\b')
     degree_clauses = [clause for clause in re.split(r'[\n.;]', plain(job.description))
                       if re.search(degree_pattern, clause, re.I)]
     degree_evidence = ' '.join(degree_clauses).casefold()
@@ -154,6 +154,8 @@ def rule_assessment(job, candidate):
         education_terms.append('master')
     if re.search(r'\b(?:doctoral|ph\.?d\.?)', degree_evidence, re.I):
         education_terms.append('phd')
+    if re.search(r'\bmba\b', degree_evidence, re.I):
+        education_terms.append('mba')
     for subject in ('computer science', 'software engineering', 'engineering'):
         if subject in degree_evidence:
             education_terms.append(subject)
