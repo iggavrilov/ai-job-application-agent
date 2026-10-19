@@ -424,4 +424,3 @@ def _submit_live_application(job_id: int, job, candidate, preferences, answers, 
             raise ApplicationSubmissionError(
                 f'The form could not be fully verified before submission ({type(exc).__name__}); no submission was attempted.'
             ) from None
-

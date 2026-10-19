@@ -394,4 +394,3 @@ def test_dashboard_shows_exact_snapshot_and_requires_current_confirmation(
     with factory() as session:
         status = session.get(JobRow, 4).status
     assert status == 'Shortlisted'
-
