@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from sqlalchemy import select
 from streamlit.testing.v1 import AppTest
@@ -57,12 +58,14 @@ def test_same_title_rows_select_distinct_vacancy_details(tmp_path, monkeypatch, 
 
     _select_vacancy(app, first_id)
     assert app.session_state['selected_vacancy_id'] == first_id
+    assert app.success[0].value == f'Selected vacancy #{first_id}: Bitdefender — QA Engineer'
     assert any('Moldova role description' in element.value for element in app.text)
     first_url = next(link.proto.url for link in app.link_button if link.label == 'Open job posting')
     assert first_url == 'https://jobs.example/qa-md'
 
     _select_vacancy(app, second_id)
     assert app.session_state['selected_vacancy_id'] == second_id
+    assert app.success[0].value == f'Selected vacancy #{second_id}: Bitdefender — QA Engineer'
     assert any('Romania role description' in element.value for element in app.text)
     second_url = next(link.proto.url for link in app.link_button if link.label == 'Open job posting')
     assert second_url == 'https://jobs.example/qa-ro'
@@ -81,6 +84,7 @@ def test_selection_persists_when_visible_and_clears_when_filtered_out(tmp_path, 
     next(widget for widget in app.multiselect if widget.label == 'Region').select('Romania').run()
     assert not app.exception
     assert app.session_state['selected_vacancy_id'] == second_id
+    assert app.success[0].value == f'Selected vacancy #{second_id}: Bitdefender — QA Engineer'
     assert app.dataframe[0].value['ID'].tolist() == [second_id]
 
     next(widget for widget in app.multiselect if widget.label == 'Region').set_value(['Moldova']).run()
@@ -108,3 +112,39 @@ def test_review_status_is_saved_to_selected_id_and_survives_reruns(tmp_path, mon
     assert rows == {first_id: 'New', second_id: 'Shortlisted'}
     assert app.session_state['selected_vacancy_id'] == second_id
     assert next(widget for widget in app.selectbox if widget.label == 'Update review status').value == 'Shortlisted'
+
+
+def test_selected_indicator_and_status_follow_id_when_sort_order_changes(tmp_path, monkeypatch, candidate):
+    target = 'sqlite:///' + str(tmp_path / 'selection-sort.db')
+    monkeypatch.setenv('DATABASE_URL', target)
+    factory = database(target)
+    first_id, second_id = _seed_same_title_jobs(factory, candidate)
+    with factory() as session:
+        first = session.scalar(select(MatchRow).where(MatchRow.job_id == first_id))
+        second = session.scalar(select(MatchRow).where(MatchRow.job_id == second_id))
+        first_payload, second_payload = json.loads(first.payload), json.loads(second.payload)
+        first_payload['professional_score'] = 20
+        second_payload['professional_score'] = 95
+        first.payload, second.payload = json.dumps(first_payload), json.dumps(second_payload)
+        session.commit()
+
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    assert not app.exception
+    assert next(widget for widget in app.selectbox if widget.label == 'Rank by').value == 'Professional score'
+    assert app.dataframe[0].value['ID'].tolist() == [second_id, first_id]
+    _select_vacancy(app, second_id)
+    selected_label = f'Selected vacancy #{second_id}: Bitdefender — QA Engineer'
+    assert app.success[0].value == selected_label
+
+    next(widget for widget in app.selectbox if widget.label == 'Rank by').select('Geographic priority').run()
+    assert not app.exception
+    assert app.dataframe[0].value['ID'].tolist() == [first_id, second_id]
+    assert app.session_state['selected_vacancy_id'] == second_id
+    assert app.success[0].value == selected_label
+    assert any('Romania role description' in element.value for element in app.text)
+
+    next(widget for widget in app.selectbox if widget.label == 'Update review status').select('Shortlisted').run()
+    next(button for button in app.button if button.label == 'Save review status').click().run()
+    with factory() as session:
+        statuses = {row.id: row.status for row in session.scalars(select(JobRow))}
+    assert statuses == {first_id: 'New', second_id: 'Shortlisted'}

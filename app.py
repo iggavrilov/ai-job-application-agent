@@ -131,6 +131,7 @@ with factory() as session:
             if selected is None:
                 st.caption('Select a vacancy row above to review its details.')
             else:
+                st.success(f"Selected vacancy #{selected['ID']}: {selected['Company']} — {selected['Job title']}")
                 job, match = selected['_job'], selected['_match']
                 with st.container(border=True):
                     st.markdown('### Job details')
