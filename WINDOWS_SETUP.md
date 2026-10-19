@@ -1,12 +1,12 @@
 # Windows setup and daily discovery
 
-Current relevance results and source evidence are in [RELEVANCE_REVIEW.md](RELEVANCE_REVIEW.md); historical discovery is in [QA_DISCOVERY_REPORT.md](QA_DISCOVERY_REPORT.md); PR #1 validation is preserved in [TAKEOVER_VALIDATION.md](TAKEOVER_VALIDATION.md). The full suite passed on Windows Python 3.11.0 and 3.12.14; Python 3.12+ remains the documented target. Full tests use synthetic inputs and require no private profile. Real discovery still requires your private profile. No command submits applications.
+PR #3 is merged to main. Current relevance results and source evidence are in [RELEVANCE_REVIEW.md](RELEVANCE_REVIEW.md); historical discovery is in [QA_DISCOVERY_REPORT.md](QA_DISCOVERY_REPORT.md). Start from latest main. Full tests use synthetic inputs and require no private profile; real discovery requires your ignored local profile. No command submits applications.
 
 ## 1. Prerequisites and private files
 
 Install 64-bit Python 3.12 or later from python.org with the Python launcher. Git is optional. Use a normal local folder, for example `C:\Projects\job-agent`, with write access. An internet connection must permit your package index and the three public API domains. Do not disable TLS verification or bypass a company proxy.
 
-Clone the private GitHub repository and check out the PR branch. Restore your own `candidate_profile.json` privately if you already have one. It is excluded from Git; cloning does not restore it. Do not publish the CV, extracted text or profile in issues, PRs or CI artifacts.
+Clone the private GitHub repository's default branch (latest main). PR #3 has been merged. Restore your own `candidate_profile.json` privately if you already have one. It is excluded from Git; cloning does not restore it. Do not publish the CV, extracted text or profile in issues, PRs or CI artifacts.
 
 To create it locally from a real PDF:
 
@@ -53,7 +53,7 @@ Edit local `.env`, never `.env.example`, for secrets:
 
 `config/search_rules.yaml`: title include/exclude keywords, score weights, request interval. Keep `minimum_salary: null`; missing/low salary never reduces compatibility. Salary is preserved when supplied. Technical/experience/geography/additional weights receive the redistributed salary weight.
 
-`config/company_boards.yaml`: employer, source platform (`greenhouse`, `lever`, `ashby`), board identifier, enabled flag and verification notes. The active registry contains 27 verified employers (22 Greenhouse, 5 Lever). PostHog and Wealthsimple remain disabled in the Ashby research queue because API-origin robots policy is unavailable. See QA_DISCOVERY_REPORT.md for exact source links, timestamps, counts and vacancy limitations; add employers only after finding the actual board link on their official careers site. A successful API response alone does not establish employer ownership or Moldova eligibility.
+`config/company_boards.yaml`: employer, source platform (`greenhouse`, `lever`, `ashby`), board identifier, enabled flag and verification notes. The active registry contains 30 verified employer boards (25 Greenhouse, 5 Lever). PostHog and Wealthsimple remain disabled in the Ashby research queue because API-origin robots policy is unavailable. See RELEVANCE_REVIEW.md for exact source links, timestamps, counts and vacancy limitations; add employers only after finding the actual board link on their official careers site. A successful API response alone does not establish employer ownership or Moldova eligibility.
 
 For Moldova/Romania/EU coverage, verify actual employer careers pages first, then confirm the country terms in each vacancy. Never guess a board slug from a company name. All EU countries, including Cyprus, share the EU region. Remote Europe or EU-only does not establish eligibility for a Moldova resident.
 
@@ -83,7 +83,7 @@ To opt into OpenAI, set the API key and remove `--no-ai`. Professional profile f
 
 Open http://127.0.0.1:8501 on that PC. Keep the terminal open. Stop with Ctrl+C. The dashboard is local to your PC; these instructions do not expose it to your phone or the internet.
 
-Use “Discover jobs now” to run a search. OpenAI is off in the dashboard by default; opt in with its checkbox. Filter by region/location, remote status, title, score, recommendation, source and discovery date. Rank by score or geographic priority. “New” means not reviewed. Select a job for details; mark Interested, Not Interested or Reviewed. Original posting links open the employer site; no submission occurs. Unknown eligibility and uncertain mandatory requirements remain Needs Review regardless of score.
+Use “Discover jobs now” to run a search. OpenAI is off in the dashboard by default; opt in with its checkbox. Filter by region/location, remote status, title, score, recommendation, source and discovery date. Rank by professional score or geographic priority. Select a job, set its status to New, Reviewed, Shortlisted, Rejected or Applied, then save. The status is stored in SQLite and repeated discovery does not overwrite it. Legacy Interested/Not Interested labels remain available until changed. Original posting links open the employer site; no submission occurs. Unknown eligibility and uncertain mandatory requirements remain Needs Review regardless of score.
 
 ## 6. Schedule daily searches
 
@@ -97,6 +97,24 @@ First run a manual CLI search successfully. In Windows Task Scheduler, choose Cr
    - Start in: `C:\Projects\job-agent`
 4. Settings: “If the task is already running: Do not start a new instance.” Review battery/network conditions if using a laptop. “Run task as soon as possible after a scheduled start is missed” is optional.
 5. Run the task manually and inspect Last Run Result plus `data/agent.log` and dashboard search history.
+
+## 7. Fresh Windows daily-use setup
+
+In PowerShell, replace the folder if needed and run:
+
+```powershell
+git clone https://github.com/iggavrilov/ai-job-application-agent.git C:\Projects\ai-job-application-agent
+Set-Location C:\Projects\ai-job-application-agent
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+# Restore your private, ignored candidate_profile.json before real discovery.
+.\.venv\Scripts\python.exe -m agent.diagnostics
+.\.venv\Scripts\python.exe -m agent.cli discover --no-ai
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1
+```
+
+Open http://127.0.0.1:8501. Select New, Reviewed, Shortlisted, Rejected or Applied in a vacancy's details and click Save review status. SQLite stores the selection; discovery refreshes posting data and appends assessments while preserving the manual status. Keep the candidate profile, CV and database on your PC; Git ignores them.
 
 The discovery command also uses an OS-backed lock shared with the dashboard. The machine must be awake and connected. Running with a different Windows user requires that user's access to the project, `.env`, private profile and writable database. The dashboard need not be open.
 

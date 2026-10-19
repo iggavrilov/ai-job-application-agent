@@ -76,4 +76,10 @@ Residence-duration requirements and nationality wording were incorrectly able to
 
 Regression tests now exercise distinct same-title/same-city IDs and URLs with different eligibility, exact-URL alias deduplication, snapshot and pre-snapshot history repair, repeat-open idempotence, rollback, and recovered separate rows in Streamlit. The old tests that explicitly expected fuzzy merging were corrected to assert the new identity policy; their exact-identity/URL dedup and changed-content coverage remain.
 
-No private CV, candidate JSON, credentials or databases are included. Local backup and live diagnostic files remain ignored. New PR commits preserve the user-authorized author metadata. PR #3 remains open and is not merged.
+No private CV, candidate JSON, credentials or databases are included. Local backup and live diagnostic files remain ignored. New PR commits preserve the user-authorized author metadata. PR #3 has since merged to main.
+
+## Daily-use check — 2026-10-19
+
+After PR #3 merged to main, discovery fetched 2,761 postings from 30/30 boards, normalized all 2,761, rejected 2,717 by title and retained 44 distinct current QA records (0 new on repeat discovery). Current unique-record eligibility is 0 Eligible, 25 Needs Review and 19 Ineligible. Professional evidence is 1 Strong Match, 1 Good Match, 36 Needs Review and 6 Not Recommended. All current vacancy titles, locations, remote labels, match scores, eligibility concerns and original URLs are in a local ignored report at `private/daily-vacancy-review-2026-10-19.md`; it is generated from local SQLite and is not included in Git.
+
+The dashboard now lets the user set New, Reviewed, Shortlisted, Rejected or Applied. Status is saved on the SQLite job row; discovery updates posting and match history without changing that status. Automated tests exercised all four manual states over two repeated discoveries. The full Windows Python 3.12.14 suite now reports 168 passed and 48 subtests passed, with zero failures, skips or pytest warnings.

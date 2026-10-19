@@ -119,11 +119,15 @@ with factory() as session:
                 st.caption('Source aliases share an exact canonical application URL. Distinct application URLs are stored and assessed separately.')
                 for index, observation in enumerate(selected['_observations'],1):
                     st.link_button(f'Source posting {index}',str(observation.url))
-            for col,status in zip(st.columns(3),['Interested','Not Interested','Reviewed']):
-                if col.button('Mark as '+status):
-                    session.get(JobRow,selected['ID']).status = status
-                    session.commit()
-                    st.rerun()
+            review_statuses = ['New','Reviewed','Shortlisted','Rejected','Applied']
+            if selected['Review status'] not in review_statuses:
+                review_statuses.append(selected['Review status'])  # Preserve legacy labels until the user changes them.
+            new_status = st.selectbox('Update review status',review_statuses,
+                                      index=review_statuses.index(selected['Review status']))
+            if st.button('Save review status'):
+                session.get(JobRow,selected['ID']).status = new_status
+                session.commit()
+                st.rerun()
     else:
         st.info('No stored relevant vacancies in this view. Run discovery or inspect Excluded / audit for preserved reasons.')
     with st.expander('Search history'):
