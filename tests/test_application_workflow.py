@@ -39,6 +39,12 @@ class FakeLocator:
         return self if index == 0 else FakeLocator(present=False, store=self.store, key=self.key)
 
     def evaluate(self, expression):
+        if 'el.files' in expression:
+            value = self.store.get(self.key)
+            if value:
+                path = Path(value)
+                return [{'name': path.name, 'size': path.stat().st_size}]
+            return []
         if 'tagName' in expression:
             kind = self.store.get('_types', {}).get(self.key, ('input', 'text', ''))
             return {'tag': kind[0], 'type': kind[1], 'role': kind[2]}
@@ -143,11 +149,15 @@ class FakePage:
         self.values = {}
         self.values['_options'] = {'#country': ['Exampleland']}
         self.labels = [('Location (City)*', 'candidate-location')]
+        self.required_fields = []
 
     def locator(self, selector):
         if selector == 'label':
             return FakeLabelCollection(self.values, self.labels)
         return FakeLocator(store=self.values, key=selector)
+
+    def evaluate(self, expression):
+        return self.required_fields
 
     def get_by_role(self, role, name=None, exact=False):
         if role != 'option':
@@ -366,8 +376,21 @@ def test_greenhouse_mock_form_verifies_names_and_uploads_cv(tmp_path, candidate)
     assert 'ambiguous' in location_result.note
     assert page.values['#question_9299068101'] == '5,200 TEST/month'
     assert page.values['input[type="file"]#resume'] == str(cv.resolve())
+    resume_result = next(result for result in results if result.label == 'Resume/CV')
+    assert f'Verified attached file: {cv.name} ({cv.stat().st_size} bytes)' == resume_result.note
     assert page.values['_selected']['#country'] == 'Exampleland'
     assert not any('authorization' in field or 'consent' in field for field in page.values)
+
+
+def test_unknown_required_field_is_flagged_for_candidate_review(tmp_path, candidate):
+    cv = tmp_path / 'synthetic-cv.pdf'
+    cv.write_bytes(b'%PDF-1.4 synthetic fixture')
+    page = FakePage()
+    page.required_fields = ['Portfolio URL*']
+    results = _fill_form(page, _full_candidate(candidate), cv, _confirmed_preferences())
+    review = next(item for item in results if item.label == 'Portfolio URL*')
+    assert review.status == 'Needs candidate input'
+    assert 'Required field remains empty' in review.note
 
 
 def test_submit_guard_blocks_form_event_and_disables_submit_control():
