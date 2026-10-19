@@ -107,7 +107,7 @@ def test_verified_education_avoids_absent_education_warning(candidate):
     educated = candidate.model_copy(update={'education': ["Bachelor's degree in Computer Science"]})
     job = qa('Bucharest', description=(
         "The ideal candidate should have: a bachelor's degree in Computer Science. "
-        'Three years of QA experience and Playwright testing.'
+        'Three years of QA experience and Playwright testing with the Scrum Master.'
     ))
     result = evaluate(job, educated, rules(), False)
     assert not any('Education requirement detected' in item for item in result.mandatory_requirements)
