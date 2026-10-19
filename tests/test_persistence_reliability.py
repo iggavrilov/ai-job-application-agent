@@ -77,3 +77,26 @@ def test_config_failure_is_recorded(tmp_path,monkeypatch):
     assert 'private information' not in str(result['errors'])
     with db() as session:
         assert session.scalar(select(SearchRun)).finished
+
+
+@pytest.mark.parametrize('status',['Reviewed','Shortlisted','Rejected','Applied'])
+def test_manual_status_survives_repeated_discovery(tmp_path,monkeypatch,job,status,candidate):
+    import agent.discovery as d
+    db=database('sqlite:///'+str(tmp_path/f'{status}.db'))
+    monkeypatch.setattr(d,'database',lambda:db)
+    board={'company':'Mock','platform':'lever','board':'mock','enabled':True}
+    monkeypatch.setattr(d,'load_boards',lambda:([board],[]))
+    monkeypatch.setattr(d,'collect',lambda *args:[job])
+    with db() as session:
+        company=Company(name='Mock');session.add(company);session.flush()
+        source=Source(company_id=company.id,platform='lever',board='mock');session.add(source);session.flush()
+        row,_=upsert_job(session,job,source)
+        row.status=status
+        session.commit()
+    for _ in range(2):
+        result=d.discover(False)
+        assert result['status']=='Success'
+    with db() as session:
+        rows=list(session.scalars(select(JobRow)))
+        assert len(rows)==1 and rows[0].status==status
+        assert len(list(session.scalars(select(JobObservation))))==1

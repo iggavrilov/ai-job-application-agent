@@ -37,7 +37,8 @@ def test_dashboard_load_and_review(tmp_path, monkeypatch, candidate, populated):
     if populated:
         assert app.subheader[0].value == 'QA Engineer'
         assert app.metric[0].value == '1'
-        next(button for button in app.button if button.label == 'Mark as Reviewed').click().run()
+        next(widget for widget in app.selectbox if widget.label == 'Update review status').select('Reviewed').run()
+        next(button for button in app.button if button.label == 'Save review status').click().run()
         assert not app.exception
         with factory() as session:
             assert session.scalar(select(JobRow)).status == 'Reviewed'

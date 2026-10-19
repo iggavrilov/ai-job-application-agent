@@ -2,7 +2,7 @@
 
 Local Python 3.12+ Streamlit app for discovering and reviewing QA vacancies. No application submission, LinkedIn automation, browser automation, or authenticated employer access.
 
-Current status: [geography and professional relevance review](RELEVANCE_REVIEW.md). There are 30 verified employer boards; the live run fetched 2,755 postings and retained 44 current records. The main list contains 23 records requiring geographic review, with zero confirmed Moldova-accessible vacancies. Professional fit is separate from eligibility. The suite passes 164 tests and 48 subtests on Windows Python 3.12. See [Windows setup](WINDOWS_SETUP.md); historical discovery results remain in [QA_DISCOVERY_REPORT.md](QA_DISCOVERY_REPORT.md).
+Current status: [geography and professional relevance review](RELEVANCE_REVIEW.md). There are 30 verified employer boards; the latest run fetched 2,761 postings and retained 44 current records. The main list contains 23 records requiring geographic review, with zero confirmed Moldova-accessible vacancies. The dashboard supports New, Reviewed, Shortlisted, Rejected and Applied statuses in SQLite; repeated discovery preserves manual choices. Professional fit is separate from eligibility. See [Windows setup](WINDOWS_SETUP.md) and the private local ranked vacancy report.
 
 ## Windows setup (PowerShell)
 
@@ -60,26 +60,21 @@ Choose вЂњDo not start a new instanceвЂќ in task settings. An OS-backed fi
 
 ## Persistence and privacy
 
-SQLite tables: candidate_profiles, companies, job_sources, jobs, job_observations, job_matches, search_runs, application_records (reserved, never submitted). Jobs retain first discovered and last checked dates. Latest source content is updated on rediscovery. Match history appends with candidate snapshot, job-description snapshot and logic/config version. Source identities and latest per-source payloads are retained in the additive job_observations table. Deduplication uses platform/board/source ID, canonical URL and normalized company/title/location; same-title vacancies at one location may merge. No automatic deletion or application occurs. Search history distinguishes fetched board postings from stored relevant vacancies. вЂњNewвЂќ means not reviewed.
+SQLite tables: candidate_profiles, companies, job_sources, jobs, job_observations, job_matches, search_runs, application_records (reserved, never submitted). Jobs retain first discovered and last checked dates. Latest source content is updated on rediscovery. Match history appends with candidate snapshot, job-description snapshot and logic/config version. Source identities and latest per-source payloads are retained in the additive job_observations table. Deduplication uses exact platform/board/source ID and canonical application URL. Different application URLs remain separate even when employer, title and location match; startup repair splits historical fuzzy groups and retains assessment history. Manual review statuses survive rediscovery. No automatic deletion or application occurs. Search history distinguishes fetched board postings from stored relevant vacancies.
 
 Local profile, `.env`, PDFs, logs and databases are excluded from Git. Keep the local dashboard bound to 127.0.0.1. No credentials ship with the project. No fabricated live or demo results are used.
 
 ## Validation limits
 
-Linux automated tests and live-source results are recorded below after execution. Windows commands and file locking are designed for Windows but require a real Windows verification run. Public source availability changes; inaccessible boards are logged and other boards continue. Robots directives are checked before each board request, HTTP errors (including 429) stop that board without aggressive retry. Respect employer policies when adding registry entries. No removed-posting lifecycle tracking is implemented in MVP-01.
+Public source availability and vacancy contents change. Inaccessible boards are logged while other boards continue. Robots directives are checked before each board request, HTTP errors (including 429) stop that board without aggressive retry. Geographic matching is heuristic and cannot confirm work authorization. No removed-posting lifecycle tracking is implemented in MVP-01.
 
 ## Latest validation
 
-See [VALIDATION.md](VALIDATION.md) for the 2026-10-16 evidence and remaining blockers. The available-environment offline subset passed 14 test methods and syntax compilation passed. The full pytest suite, database runtime, Streamlit dashboard and live discovery remain unverified because required packages are missing and the command sandbox blocks network connections. No real vacancies were discovered. Offline subset command (requires HTTPX, Pydantic, PyYAML and python-dotenv):
-
-```powershell
-python -m unittest discover -s tests -p test_available_environment.py -v
-```
-
+See [RELEVANCE_REVIEW.md](RELEVANCE_REVIEW.md) for current live discovery, source evidence, full test results and limitations.
 
 ## Windows handoff and source readiness
 
-Follow [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for installation, daily Task Scheduler setup and troubleshooting. [SOURCE_VERIFICATION.md](SOURCE_VERIFICATION.md) documents all three pending starter entries; zero boards are independently verified. Run `python -m agent.cli verify-boards` only with permitted network access. It saves endpoint evidence locally without marking employer ownership verified. `python -m agent.diagnostics` runs a standard-library-only readiness check even in an otherwise empty venv.
+Follow [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for installation, daily Task Scheduler setup and troubleshooting. [SOURCE_VERIFICATION.md](SOURCE_VERIFICATION.md) and [RELEVANCE_REVIEW.md](RELEVANCE_REVIEW.md) document the active verified boards and source limits. Run `python -m agent.cli verify-boards` only with permitted network access. It saves endpoint evidence locally without marking employer ownership verified. `python -m agent.diagnostics` checks profile and runtime readiness.
 
 The dashboard defaults to rule-based matching; its OpenAI checkbox is opt-in. Region filters group Cyprus with EU countries and support geographic-priority ranking. A failed board transaction rolls back before processing the next board. Malformed postings are isolated with warnings. Logs from dashboard and CLI rotate in `data/agent.log`. The full runtime remains unverified in the managed environment.
 
