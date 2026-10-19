@@ -14,10 +14,16 @@ from agent.matching import region, ranking_key, evaluate
 from agent.settings import rules, ROOT
 from agent.registry import load_boards
 from agent.application_workflow import ApplicationPreparationError, _launch_from_dashboard, _private_paths
+from agent.application_submission import (
+    ApplicationSubmissionError,
+    approve_and_submit,
+    load_application_review,
+    reconcile_pending_submissions,
+)
 
 st.set_page_config(page_title='QA Job Agent',layout='wide')
 st.title('QA Job Agent · MVP-01')
-st.caption('Local discovery and review. Supervised form preparation is available; final submission stays blocked.')
+st.caption('Local discovery, review, and candidate-approved application preparation.')
 try:
     boards, registry_errors = load_boards()
 except Exception as exc:
@@ -48,6 +54,11 @@ try:
 except Exception as exc:
     st.error(f'Cannot open SQLite database: {type(exc).__name__}. Check DATABASE_URL and folder permissions.')
     st.stop()
+sync_results = reconcile_pending_submissions(ROOT, factory)
+if sync_results.get('Conflict', 0):
+    st.warning(f"{sync_results['Conflict']} confirmed submission(s) need manual review-status reconciliation; existing manual choices were preserved.")
+if sync_results.get('Unavailable', 0):
+    st.warning(f"{sync_results['Unavailable']} confirmed submission status update(s) remain pending because local storage was unavailable.")
 with factory() as session:
     runs = list(session.scalars(select(SearchRun).order_by(SearchRun.id.desc())))
     all_records = []
@@ -73,8 +84,9 @@ with factory() as session:
           'Publication date':job.published,'Application link':str(job.url),'Source':job.platform,'Discovered':row.first_discovered[:10],
           'Region':region(job.location + ' ' + job.title),'Last checked':row.last_checked[:19],'Review status':row.status,'_job':job,'_match':match,'_observations':observations})
     records = [record for record in all_records if record['_match'].in_main_recommendations]
-    cols = st.columns(6)
+    cols = st.columns(7)
     metrics = [('Total vacancies',len(records)),('New vacancies',sum(r['Review status']=='New' for r in records)),
+      ('Applied',sum(r['Review status']=='Applied' for r in all_records)),
       ('Strong professional fit',sum(r['Professional fit']=='Strong Match' for r in records)),('Good professional fit',sum(r['Professional fit']=='Good Match' for r in records)),
       ('Geography needs review',sum(r['Geographic eligibility']=='Needs Review' for r in records)),('Last successful search',next((r.finished[:19] for r in runs if r.status=='Success'),'Never'))]
     for col,(label,value) in zip(cols,metrics):
@@ -167,18 +179,31 @@ with factory() as session:
                         else:
                             if match.eligibility == 'Needs Review':
                                 st.warning('Geographic eligibility is Needs Review. Preparation is provisional; do not proceed until the employer confirms location and work-authorization requirements.')
-                            if st.button('Prepare Application', key=f"prepare-application-{selected['ID']}"):
+                            current_app_state = {}
+                            _, _, state_path = _private_paths(ROOT, selected['ID'])
+                            if state_path.is_file():
+                                try:
+                                    current_app_state = json.loads(state_path.read_text(encoding='utf-8'))
+                                except (OSError, json.JSONDecodeError):
+                                    current_app_state = {}
+                            submission_terminal = current_app_state.get('status') in {
+                                'Submitting', 'Submitted', 'Submission Uncertain'
+                            }
+                            if submission_terminal:
+                                st.info('This application has a submission record. Check its state before taking any further action.')
+                            elif st.button('Prepare Application', key=f"prepare-application-{selected['ID']}"):
                                 try:
                                     _launch_from_dashboard(selected['ID'])
-                                    st.success('Visible browser launched. Preparation stops before submission; review decisions are unchanged.')
+                                    st.success('Visible browser launched. The application remains separate from the vacancy review status.')
                                 except (ApplicationPreparationError, OSError) as exc:
                                     st.error(str(exc))
                         _, preview_path, state_path = _private_paths(ROOT, selected['ID'])
                         if state_path.is_file():
                             try:
-                                application_state = json.loads(state_path.read_text(encoding='utf-8'))
+                                application_state, review_snapshot, review_hash = load_application_review(selected['ID'], ROOT)
                                 st.markdown('#### Supervised application')
-                                st.write(f"**Form filling status:** {application_state.get('status', 'Unknown')}")
+                                workflow_status = application_state.get('status', 'Unknown')
+                                st.write(f"**Application workflow status:** {workflow_status}")
                                 completed_fields = application_state.get('completed_fields', [])
                                 candidate_fields = application_state.get('candidate_input_fields', [])
                                 st.write('**Fields completed:** ' + (', '.join(completed_fields) if completed_fields else 'Preparation not yet complete'))
@@ -192,9 +217,80 @@ with factory() as session:
                                         screenshot = preview.get('screenshot_path')
                                         if screenshot and Path(screenshot).is_file():
                                             st.image(screenshot, caption='Private application preview')
-                                st.caption('Awaiting candidate approval. No application was submitted and this vacancy remains Shortlisted.')
-                            except (OSError, json.JSONDecodeError):
+                                if workflow_status == 'Ready for Approval' and review_snapshot and review_hash:
+                                    st.markdown('##### Review exact application data')
+                                    st.write(f"**Employer:** {review_snapshot['employer']}")
+                                    st.write(f"**Job title:** {review_snapshot['job_title']}")
+                                    st.link_button('Open application URL', review_snapshot['application_url'])
+                                    identity = review_snapshot['candidate']
+                                    st.write(f"**Candidate:** {identity['name']} (preferred name: {identity['preferred_first_name'] or 'Not set'})")
+                                    st.write(f"**Email / phone:** {identity['email']} · {identity['phone']}")
+                                    st.write(f"**Current residence:** {identity['current_residence']}")
+                                    form_data = review_snapshot['form_data']
+                                    st.write(f"**Application location:** {form_data['location_city']}")
+                                    st.write(f"**Salary expectation:** {form_data['salary_expectation']}")
+                                    st.write(f"**Work authorization:** {form_data['work_authorization']}")
+                                    st.write(f"**Recruitment data-processing consent:** {form_data['recruitment_data_processing_consent']}")
+                                    cv_info = review_snapshot['attached_cv']
+                                    st.write(f"**Attached CV:** {cv_info['filename']} · SHA-256 {cv_info['sha256'][:12]}")
+                                    st.caption(f"Snapshot {review_hash[:16]} is bound to vacancy #{selected['ID']} and this exact application URL.")
+                                    with st.expander('All verified form fields'):
+                                        st.dataframe(review_snapshot.get('form_fields', []),
+                                                     hide_index=True, use_container_width=True)
+                                    with st.form(key=f"approve-submit-form-{selected['ID']}-{review_hash[:12]}"):
+                                        explicitly_confirmed = st.checkbox(
+                                            f"I reviewed this application for vacancy #{selected['ID']} at {review_snapshot['application_url']} and approve submitting the displayed information and CV."
+                                        )
+                                        submit_clicked = st.form_submit_button('Approve & Submit')
+                                    if submit_clicked:
+                                        if not explicitly_confirmed:
+                                            st.error('Check the exact-application confirmation before approving submission.')
+                                        else:
+                                            try:
+                                                final_state = approve_and_submit(
+                                                    selected['ID'], review_hash,
+                                                    candidate_confirmed=explicitly_confirmed,
+                                                    root=ROOT, factory=factory)
+                                                st.info(f"Application workflow state: {final_state['status']}")
+                                            except (ApplicationSubmissionError, ApplicationPreparationError, OSError) as exc:
+                                                st.error(str(exc))
+                                            st.rerun()
+                                elif workflow_status == 'Needs Review':
+                                    st.warning('Resolve the listed candidate questions or rerun preparation after updating the private answers. Submission is unavailable.')
+                                elif workflow_status == 'Submission Uncertain':
+                                    st.error('The employer may have received this application. Check the employer site manually; automatic retry is blocked.')
+                                elif workflow_status == 'Submission Failed':
+                                    st.warning('Submission stopped before dispatch. Reprepare and review the exact application before another approval.')
+                                elif workflow_status == 'Submitted':
+                                    sync_status = application_state.get('review_status_sync', {}).get('status', 'Pending')
+                                    if sync_status == 'Synced':
+                                        st.success('The employer submission is confirmed and the vacancy review status is Applied.')
+                                    elif sync_status == 'Conflict':
+                                        st.warning('The employer submission is confirmed. A different manual vacancy review choice was preserved; reconcile it manually.')
+                                    else:
+                                        st.info('The employer submission is confirmed. The SQLite review status update is pending safe recovery; no submission retry will occur.')
+                                elif workflow_status == 'Approved':
+                                    st.warning('Approval was recorded, but no completed submission is recorded. Reprepare for a fresh review and approval.')
+                                else:
+                                    st.caption('Prepare the application to reach a reviewable state. Application state is separate from the vacancy review status.')
+                            except (OSError, json.JSONDecodeError, ApplicationSubmissionError, ApplicationPreparationError):
                                 st.warning('An application preparation session exists but its private preview cannot be read.')
+                    elif selected['Review status'] == 'Applied':
+                        _, _, state_path = _private_paths(ROOT, selected['ID'])
+                        try:
+                            applied_state = json.loads(state_path.read_text(encoding='utf-8'))
+                        except (OSError, json.JSONDecodeError):
+                            applied_state = {}
+                        if applied_state.get('status') == 'Submitted':
+                            st.markdown('#### Application workflow')
+                            st.write('**Application workflow status:** Submitted')
+                            sync_status = applied_state.get('review_status_sync', {}).get('status', 'Pending')
+                            if sync_status == 'Synced':
+                                st.success('Employer confirmation is verified; vacancy review status is Applied.')
+                            elif sync_status == 'Conflict':
+                                st.warning('Employer confirmation is verified; the previous manual review choice was preserved for reconciliation.')
+                            else:
+                                st.info('Employer confirmation is verified; SQLite status synchronization is pending recovery.')
                     if len(selected['_observations']) > 1:
                         st.markdown('#### Additional source postings')
                         for index, observation in enumerate(selected['_observations'],1):

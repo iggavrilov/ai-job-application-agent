@@ -143,6 +143,16 @@ def _reject_explicitly_ineligible(job_id: int, root: Path) -> None:
             raise ApplicationPreparationError('Application preparation is disabled for an explicitly ineligible vacancy.')
 
 
+def _access_challenge_detected(page_text: str) -> bool:
+    """Stop on bot protection or an authentication gate; never work around it."""
+    text = page_text.casefold()
+    return any(phrase in text for phrase in (
+        'captcha', 'verify you are human', 'access denied', 'security check',
+        'sign in to continue', 'log in to continue', 'authentication required',
+        'login required', 'verify your identity', 'multi-factor authentication',
+    ))
+
+
 def _name_parts(name: str) -> tuple[str, str]:
     parts = name.strip().split()
     if len(parts) < 2:
@@ -258,6 +268,41 @@ def _page_submit_guard_script() -> str:
       if (document.documentElement) observe();
       else document.addEventListener('DOMContentLoaded', observe, {once:true});
     })();"""
+
+
+def _form_dom_snapshot(page) -> dict:
+    """Read visible form structure and values without collecting hidden tokens."""
+    try:
+        snapshot = page.evaluate("""() => {
+          const formDetails = Array.from(document.forms).map(form => ({
+            action: new URL(form.action || location.href, location.href).href,
+            method: (form.method || 'get').toUpperCase(),
+            submitControls: Array.from(form.querySelectorAll('button[type="submit"],input[type="submit"]'))
+              .map(el => ({tag:el.tagName.toLowerCase(),type:el.type || '',label:(el.innerText || el.value || '').trim()})),
+          }));
+          const fields = Array.from(document.querySelectorAll('form input, form textarea, form select'))
+            .filter(el => el.type !== 'hidden' && !el.disabled)
+            .map(el => {
+              const label = Array.from(el.labels || []).map(item => (item.innerText || '').trim()).filter(Boolean).join(' / ')
+                || el.getAttribute('aria-label') || el.name || el.id || 'Unlabeled field';
+              let value;
+              if (el.type === 'file') value = Array.from(el.files || []).map(file => ({name:file.name,size:file.size}));
+              else if (el.type === 'checkbox' || el.type === 'radio') value = {checked:!!el.checked,value:el.value || ''};
+              else if (el.tagName === 'SELECT') value = Array.from(el.selectedOptions).map(option => option.text.trim());
+              else if (el.getAttribute('role') === 'combobox') value = el.closest('.select__container')?.querySelector('.select__single-value')?.innerText.trim() || el.value || '';
+              else value = el.value || '';
+              return {
+                tag:el.tagName.toLowerCase(), type:(el.type || '').toLowerCase(), id:el.id || '',
+                name:el.name || '', label, required:!!el.required || el.getAttribute('aria-required') === 'true', value,
+              };
+            });
+          return {forms:formDetails, fields};
+        }""")
+    except Exception:
+        raise ApplicationPreparationError('The Greenhouse form structure and current values could not be verified.') from None
+    if not snapshot or not snapshot.get('forms') or not snapshot.get('fields'):
+        raise ApplicationPreparationError('The official Greenhouse form could not be captured for exact review.')
+    return snapshot
 
 
 def _fill_verified_text(target, locator_description: str, value: str) -> str:
@@ -406,12 +451,12 @@ def _fill_form(page, candidate: Candidate, cv_path: Path,
     for label, selector, value in mappings:
         if label == 'Preferred First Name' and not value:
             continue
-        _fill_label(page, selector, value)
-        completed.append(FieldResult(label, 'Completed'))
+        verified = _fill_label(page, selector, value)
+        completed.append(FieldResult(label, 'Completed', 'Verified value: ' + verified))
     country_value = _select_country(page, values['country'])
     completed.append(FieldResult('Country', 'Completed', 'Verified value: ' + country_value))
     phone_value = _fill_label(page, '#phone', values['phone'])
-    completed.append(FieldResult('Phone', 'Completed', 'Verified phone digits in live DOM'))
+    completed.append(FieldResult('Phone', 'Completed', 'Verified value: ' + phone_value))
 
     completed.extend(_fill_location_fields(
         page, values, answers.location_city if answers else None))
@@ -434,7 +479,36 @@ def _fill_form(page, candidate: Candidate, cv_path: Path,
     if not cv_path.is_file() or resume.count() != 1:
         raise ApplicationPreparationError('The private tailored PDF or Greenhouse resume upload control is missing.')
     fill_supported_control(resume, 'file', cv_path)
-    completed.append(FieldResult('Resume/CV', 'Uploaded'))
+    try:
+        attached = resume.evaluate('(el) => Array.from(el.files || []).map(file => ({name:file.name,size:file.size}))')
+    except Exception:
+        raise ApplicationPreparationError('The Greenhouse CV attachment could not be verified in the live DOM.') from None
+    if (len(attached) != 1 or attached[0].get('name') != cv_path.name
+            or attached[0].get('size') != cv_path.stat().st_size):
+        raise ApplicationPreparationError('The selected CV is not attached to the Greenhouse form.')
+    completed.append(FieldResult('Resume/CV', 'Uploaded',
+                                 f"Verified attached file: {attached[0]['name']} ({attached[0]['size']} bytes)"))
+    try:
+        unfilled_required = page.evaluate("""() => Array.from(document.querySelectorAll('form [required], form [aria-required="true"]'))
+          .filter(el => {
+            if (el.type === 'hidden' || el.disabled) return false;
+            if (el.type === 'radio') return !document.querySelector(`form input[type="radio"][name="${CSS.escape(el.name)}"]:checked`);
+            if (el.type === 'checkbox') return !el.checked;
+            if (el.type === 'file') return !(el.files && el.files.length);
+            if (el.getAttribute('role') === 'combobox') return !el.closest('.select__container')?.querySelector('.select__single-value');
+            return !String(el.value || '').trim();
+          })
+          .map(el => {
+            const label = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+            return (label?.innerText || el.getAttribute('aria-label') || el.name || el.id || 'Unlabeled required field').trim();
+          });""")
+    except Exception:
+        raise ApplicationPreparationError('Required Greenhouse fields could not be verified in the live DOM.') from None
+    known_labels = {item.label.casefold() for item in completed}
+    for label in unfilled_required:
+        if label.casefold() not in known_labels:
+            completed.append(FieldResult(label, 'Needs candidate input',
+                                         'Required field remains empty or is not supported by the verified field mapping.'))
     return tuple(completed)
 
 
@@ -499,6 +573,15 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
     application_answers = application_answers_for(job_id, job.company, str(job.url), preferences)
     directory, preview_path, state_path = _private_paths(root, job_id)
     directory.mkdir(parents=True, exist_ok=True)
+    if state_path.is_file():
+        try:
+            previous_state = json.loads(state_path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            previous_state = {}
+        if previous_state.get('status') in {'Submitting', 'Submitted', 'Submission Uncertain'}:
+            raise ApplicationPreparationError(
+                'This application has an approval or submission record. Reconcile its state before preparing again.'
+            )
     preview_image = directory / 'application_preview.png'
     fields_for_review = [
         FieldResult(label, 'Needs candidate input', reason)
@@ -508,7 +591,7 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
             or (label == 'Recruitment data-processing consent'
                 and not application_answers.recruitment_data_processing_consent))
     ]
-    _write_json(state_path, {'status': 'Starting', 'job_id': job_id, 'completed_fields': [],
+    _write_json(state_path, {'status': 'Prepared', 'job_id': job_id, 'completed_fields': [],
                              'candidate_input_fields': [asdict(item) for item in fields_for_review],
                              'application_url': str(job.url), 'preview_path': str(preview_path)})
     try:
@@ -532,9 +615,9 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
         if not body.strip():
             browser.close()
             raise ApplicationPreparationError('The official page loaded without readable form content; preparation stopped.')
-        if any(term in body for term in ('captcha', 'verify you are human', 'access denied', 'security check')):
+        if _access_challenge_detected(body):
             browser.close()
-            raise ApplicationPreparationError('A security challenge is visible. Preparation stopped; complete it manually if appropriate.')
+            raise ApplicationPreparationError('A security or authentication challenge is visible. Preparation stopped; resolve it manually if appropriate.')
         try:
             adapter = ADAPTERS[job.platform.casefold()]
             results = adapter.fill(page, candidate, cv_path, preferences, application_answers)
@@ -547,24 +630,51 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
         page.wait_for_timeout(1500)
         # Ensure submit remains blocked after site-side DOM changes and confirm the button state.
         page.evaluate(_page_submit_guard_script())
+        submit_controls = page.locator('button[type="submit"],input[type="submit"]')
+        for index in range(submit_controls.count()):
+            if submit_controls.nth(index).is_enabled():
+                browser.close()
+                raise ApplicationPreparationError('The final submission control could not be disabled; preparation stopped.')
         page.screenshot(path=str(preview_image), full_page=True)
+        candidate_input_fields = (*location_reviews, *fields_for_review)
+        review_snapshot = None
+        review_hash = None
+        source_hash = None
+        if not candidate_input_fields:
+            from agent.application_submission import (
+                _load_current_sources,
+                build_review_snapshot,
+                review_fingerprint,
+            )
+            _, _, _, current_answers, current_cv, mapped, source_hash = _load_current_sources(job_id, root)
+            review_snapshot = build_review_snapshot(
+                job_id, job, mapped, current_answers, current_cv, results,
+                _form_dom_snapshot(page))
+            review_hash = review_fingerprint(review_snapshot)
+        application_state = 'Needs Review' if candidate_input_fields else 'Ready for Approval'
         result = PreparationResult(job_id=job_id, employer=job.company, role=job.title,
-            application_url=str(job.url), status='Awaiting approval',
+            application_url=str(job.url), status=application_state,
             completed_fields=tuple(item.label for item in completed),
-            candidate_input_fields=tuple(item.label for item in (*location_reviews, *fields_for_review)),
+            candidate_input_fields=tuple(item.label for item in candidate_input_fields),
             preview_path=str(preview_path))
         _write_json(preview_path, {
             'job_id': job_id, 'employer': job.company, 'role': job.title,
             'application_url': str(job.url), 'status': result.status,
             'completed_fields': [asdict(item) for item in completed],
-            'candidate_input_fields': [asdict(item) for item in (*location_reviews, *fields_for_review)],
+            'candidate_input_fields': [asdict(item) for item in candidate_input_fields],
+            'review_snapshot': review_snapshot,
+            'review_fingerprint': review_hash,
             'screenshot_path': str(preview_image),
-            'final_submission': 'Blocked; no application was submitted.',
+            'final_submission': 'Not attempted; explicit approval for this exact snapshot is required.'
+                if application_state == 'Ready for Approval'
+                else 'Blocked until required candidate review is complete.',
         })
         _write_json(state_path, {'status': result.status, 'job_id': job_id,
             'completed_fields': list(result.completed_fields),
-            'candidate_input_fields': [asdict(item) for item in (*location_reviews, *fields_for_review)],
+            'candidate_input_fields': [asdict(item) for item in candidate_input_fields],
             'application_url': str(job.url), 'preview_path': str(preview_path),
+            'review_fingerprint': review_hash,
+            'source_fingerprint': source_hash,
             'browser_open': bool(hold_browser)})
         if hold_browser:
             while not page.is_closed():
@@ -573,10 +683,12 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
                 except Exception:
                     break
         browser.close()
-        _write_json(state_path, {'status': 'Awaiting approval', 'job_id': job_id,
+        _write_json(state_path, {'status': result.status, 'job_id': job_id,
             'completed_fields': list(result.completed_fields),
-            'candidate_input_fields': [asdict(item) for item in (*location_reviews, *fields_for_review)],
+            'candidate_input_fields': [asdict(item) for item in candidate_input_fields],
             'application_url': str(job.url), 'preview_path': str(preview_path),
+            'review_fingerprint': review_hash,
+            'source_fingerprint': source_hash,
             'browser_open': False})
         return result
 
@@ -597,7 +709,16 @@ def _launch_from_dashboard(job_id: int, root: Path = ROOT) -> None:
         raise ApplicationPreparationError('Supervised preparation currently supports Bitdefender vacancy ID 4 only.')
     directory, preview_path, state_path = _private_paths(root, job_id)
     directory.mkdir(parents=True, exist_ok=True)
-    _write_json(state_path, {'status': 'Launching browser', 'job_id': job_id,
+    if state_path.is_file():
+        try:
+            old_state = json.loads(state_path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            old_state = {}
+        if old_state.get('status') in {'Submitting', 'Submitted', 'Submission Uncertain'}:
+            raise ApplicationPreparationError(
+                'This application has an approval or submission record. Reconcile its state before preparing again.'
+            )
+    _write_json(state_path, {'status': 'Prepared', 'job_id': job_id,
         'completed_fields': [], 'candidate_input_fields': [
             {'label': label, 'status': 'Needs candidate input', 'note': note}
             for label, note in REVIEW_FIELDS],
@@ -618,11 +739,11 @@ def main() -> None:
     except Exception as exc:
         _, _, state_path = _private_paths(ROOT, args.job_id)
         if state_path.parent.is_dir():
-            _write_json(state_path, {'status': 'Needs attention', 'job_id': args.job_id,
+            _write_json(state_path, {'status': 'Needs Review', 'job_id': args.job_id,
                 'completed_fields': [], 'candidate_input_fields': [
                     {'label': label, 'status': 'Needs candidate input', 'note': note}
                     for label, note in REVIEW_FIELDS], 'browser_open': False,
-                'error_type': type(exc).__name__})
+                'state_note': type(exc).__name__})
         message = str(exc) if isinstance(exc, (ApplicationPreparationError, OSError)) else (
             f'Unexpected preparation error ({type(exc).__name__}); inspect this local terminal.')
         parser.error(message)
