@@ -140,19 +140,24 @@ def rule_assessment(job, candidate):
     language_requirement = bool(re.search(r'(fluent|native|proficien|[bc][12]\b).{0,35}(english|romanian|german|french|spanish|italian)|(?:english|romanian|german|french|spanish|italian).{0,35}(fluent|native|proficien|[bc][12]\b)',text))
     if language_requirement:
         mandatory.append('Language proficiency requirement detected; candidate proficiency must be verified')
-    degree_requirement = bool(re.search(
-        r'\b(?:bachelor[’\']?s?|master[’\']?s?|doctoral|ph\.?d\.?|university)\b.{0,60}\b(?:degree|computer science|engineering)\b|\bdegree\s+in\s+(?:computer science|software engineering|engineering)\b',
-        text, re.I))
+    degree_pattern = (
+        r'\bmba\b|\b(?:bachelor[’\']?s?|master[’\']?s?|doctoral|ph\.?d\.?|university)\b.{0,60}\b(?:degree|computer science|engineering)\b|\bdegree\s+in\s+(?:computer science|software engineering|engineering)\b')
+    degree_clauses = [clause for clause in re.split(r'[\n.;]', plain(job.description))
+                      if re.search(degree_pattern, clause, re.I)]
+    degree_evidence = ' '.join(degree_clauses).casefold()
+    degree_requirement = bool(degree_clauses)
     education_text = ' '.join(candidate.education).casefold()
     education_terms = []
-    if re.search(r'\bbachelor', text, re.I):
+    if re.search(r'\bbachelor', degree_evidence, re.I):
         education_terms.append('bachelor')
-    if re.search(r'\bmaster', text, re.I):
+    if re.search(r'\bmaster', degree_evidence, re.I):
         education_terms.append('master')
-    if re.search(r'\b(?:doctoral|ph\.?d\.?)', text, re.I):
+    if re.search(r'\b(?:doctoral|ph\.?d\.?)', degree_evidence, re.I):
         education_terms.append('phd')
+    if re.search(r'\bmba\b', degree_evidence, re.I):
+        education_terms.append('mba')
     for subject in ('computer science', 'software engineering', 'engineering'):
-        if subject in text:
+        if subject in degree_evidence:
             education_terms.append(subject)
     education_unverified = degree_requirement and (
         not education_text or any(term not in education_text for term in education_terms))

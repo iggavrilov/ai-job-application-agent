@@ -107,13 +107,45 @@ def test_verified_education_avoids_absent_education_warning(candidate):
     educated = candidate.model_copy(update={'education': ["Bachelor's degree in Computer Science"]})
     job = qa('Bucharest', description=(
         "The ideal candidate should have: a bachelor's degree in Computer Science. "
-        'Three years of QA experience and Playwright testing.'
+        'Three years of QA experience and Playwright testing with the Scrum Master.'
     ))
     result = evaluate(job, educated, rules(), False)
     assert not any('Education requirement detected' in item for item in result.mandatory_requirements)
     unrelated = candidate.model_copy(update={'education': ['High school diploma']})
     result = evaluate(job, unrelated, rules(), False)
     assert any('Education requirement detected' in item for item in result.mandatory_requirements)
+
+
+@pytest.mark.parametrize('description', [
+    'A Scrum Master coordinates delivery; QA engineers use Playwright.',
+    'A Scrum Master certification is preferred; QA engineers use Playwright.',
+    'Maintain the master test plan and run Playwright regression tests.',
+])
+def test_unrelated_master_mentions_are_not_degree_requirements(candidate, description):
+    result = evaluate(qa('Bucharest', description=qa().description + ' ' + description), candidate, rules(), False)
+    assert result.professional_fit == 'Strong Match'
+    assert not any('Education requirement detected' in item for item in result.mandatory_requirements)
+
+
+def test_bachelors_masters_and_mba_requirements_use_scoped_education_evidence(candidate):
+    bachelors = candidate.model_copy(update={'education': ["Bachelor's degree in Computer Science / IT"]})
+    bachelor_job = qa('Bucharest', description="Bachelor's degree in Computer Science preferred. " + qa().description)
+    bachelor_result = evaluate(bachelor_job, bachelors, rules(), False)
+    assert bachelor_result.professional_fit == 'Strong Match'
+    assert not any('Education requirement detected' in item for item in bachelor_result.mandatory_requirements)
+
+    master_job = qa('Bucharest', description="Master's degree in Computer Science preferred. " + qa().description)
+    master_result = evaluate(master_job, bachelors, rules(), False)
+    assert master_result.professional_fit == 'Needs Review'
+    assert any('Education requirement detected' in item for item in master_result.mandatory_requirements)
+
+    mba_job = qa('Bucharest', description='MBA preferred for this QA role. ' + qa().description)
+    mba_result = evaluate(mba_job, bachelors, rules(), False)
+    assert mba_result.professional_fit == 'Needs Review'
+    assert any('Education requirement detected' in item for item in mba_result.mandatory_requirements)
+    mba_candidate = candidate.model_copy(update={'education': ['Master of Business Administration (MBA)']})
+    verified_mba = evaluate(mba_job, mba_candidate, rules(), False)
+    assert not any('Education requirement detected' in item for item in verified_mba.mandatory_requirements)
 
 def test_salary_does_not_change_either_axis(candidate):
     job=qa('Europe')
