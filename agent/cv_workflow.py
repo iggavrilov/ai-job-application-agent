@@ -380,6 +380,45 @@ def generate_shortlisted_cv(job_id: int, root: Path = ROOT) -> Path:
     return output
 
 
+def generate_vacancy_cv_draft(job_id: int, root: Path = ROOT, *,
+                              output_directory: Path | None = None) -> Path:
+    """Create a private tailored CV draft without changing or requiring review status.
+
+    ``output_directory`` supports versioned candidate-review drafts while keeping
+    an existing application package and its approval snapshot untouched.
+    """
+    root = root.resolve()
+    candidate = profile()
+    master_path = root / 'private' / 'cv' / 'master_cv.md'
+    profile_path = root / 'candidate_profile.json'
+    master_text = master_path.read_text(encoding='utf-8-sig')
+    validate_cv_document(master_text, candidate)
+    database_path = _database_path(root)
+    uri = 'file:' + quote(database_path.as_posix(), safe=':/') + '?mode=ro'
+    with sqlite3.connect(uri, uri=True) as connection:
+        record = connection.execute('SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()
+    if record is None:
+        raise CvValidationError(f'Vacancy ID {job_id} was not found')
+    job = Job.model_validate_json(record[0])
+    tailored = tailor_cv(master_text, candidate, target_title=job.title,
+                         description=job.description)
+    slug = re.sub(r'[^a-z0-9]+', '-', f'{job.company}-{job.title}'.casefold()).strip('-')
+    output_dir = (output_directory or
+                  root / 'private' / 'application_pilot' / f'job-{job_id}-{slug}').resolve()
+    try:
+        output_dir.relative_to((root / 'private').resolve())
+    except ValueError as exc:
+        raise CvValidationError('Private CV draft output must stay inside the private directory') from exc
+    output = output_dir / 'cv_draft.md'
+    metadata_path = output.with_name('application_metadata.json')
+    validate_private_git_policy(root, [profile_path, master_path, output, metadata_path])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(tailored, encoding='utf-8')
+    metadata = _application_metadata(job_id, job)
+    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    return output
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Build the private Master CV or tailor one for a Shortlisted vacancy.')
     mode = parser.add_mutually_exclusive_group(required=True)

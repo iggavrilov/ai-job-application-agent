@@ -97,7 +97,8 @@ with factory() as session:
         else:
             availability = 'Not checked'
         geographic = match.geographic_assessment
-        can_prepare=(row.status=='Shortlisted' and ((job.platform.casefold()=='greenhouse' and row.id==4 and job.company.casefold()=='bitdefender') or (job.platform.casefold()=='lever' and _has_matching_private_cv(ROOT,row.id,str(job.url)))))
+        can_prepare=(row.status=='Shortlisted' and job.platform.casefold() in {'greenhouse','lever'}
+                     and _has_matching_private_cv(ROOT,row.id,str(job.url)))
         all_records.append({'ID':row.id,'Job title':job.title,'Company':job.company,'Location':job.location,'Remote status':job.remote,
           'Professional score':match.professional_score,'Professional fit':match.professional_fit or 'Needs Review',
           'Geographic eligibility':match.eligibility,'Eligibility assessment':geographic.classification,
@@ -256,9 +257,11 @@ with factory() as session:
                                     st.success('Visible Lever form preparation started. Final submission is disabled.')
                                 except (ApplicationPreparationError, OSError) as exc:
                                     st.error(str(exc))
-                        elif selected['ID'] != 4 or job.company.casefold() != 'bitdefender':
-                            st.info('Supervised Greenhouse preparation is currently enabled for Bitdefender vacancy ID 4; Lever forms are supported separately.')
                         else:
+                            if selected['ID'] != 4 or job.company.casefold() != 'bitdefender':
+                                st.info('Greenhouse preparation fills only verified fields, attaches the vacancy-matched private PDF, and stops for unknown questions. Submission is disabled for this employer pending separate review and approval.')
+                            if not _has_matching_private_cv(ROOT, selected['ID'], str(job.url)):
+                                st.warning('A private tailored PDF with application_metadata.json matching this vacancy ID and application URL is required before preparation.')
                             if match.geographic_assessment.classification == 'Potentially Eligible — Needs Review':
                                 st.warning('Geographic eligibility is Needs Review. Preparation is provisional; do not proceed until the employer confirms location and work-authorization requirements.')
                             current_app_state = {}
@@ -269,14 +272,18 @@ with factory() as session:
                                 except (OSError, json.JSONDecodeError):
                                     current_app_state = {}
                             submission_terminal = current_app_state.get('status') in {
-                                'Submitting', 'Submitted', 'Submission Uncertain'
+                                'Awaiting approval', 'Ready for Approval', 'Approved', 'Submitting',
+                                'Submitted', 'Submission Uncertain'
                             }
                             if submission_terminal:
-                                st.info('This application has a submission record. Check its state before taking any further action.')
-                            elif st.button('Prepare Application', key=f"prepare-application-{selected['ID']}"):
+                                st.info('This application already has a prepared or submission state. Review or reconcile it before preparing again.')
+                            elif _has_matching_private_cv(ROOT, selected['ID'], str(job.url)) and st.button('Prepare Application', key=f"prepare-application-{selected['ID']}"):
                                 try:
                                     _launch_from_dashboard(selected['ID'])
-                                    st.success('Visible browser launched. The application remains separate from the vacancy review status.')
+                                    if selected['ID'] == 4 and job.company.casefold() == 'bitdefender':
+                                        st.success('Visible Greenhouse browser launched. The application remains separate from the vacancy review status.')
+                                    else:
+                                        st.success('Visible Greenhouse preparation launched. Submission is disabled for this employer.')
                                 except (ApplicationPreparationError, OSError) as exc:
                                     st.error(str(exc))
                         _, preview_path, state_path = _private_paths(ROOT, selected['ID'])

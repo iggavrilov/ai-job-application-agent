@@ -260,9 +260,11 @@ def location_value_for_label(label: str, mapped: dict[str, str]) -> tuple[str | 
             return (value or None, None if value else 'Moldova job-location preference is not configured.')
         return None, 'The preferred job-location country is not specified.'
     if any(term in normalized for term in ('current city', 'residential city')):
-        return mapped.get('current_residence_city') or None, None
+        value = mapped.get('current_residence_city') or None
+        return value, None if value else 'Verified current city is unavailable.'
     if any(term in normalized for term in ('current residence', 'residential address', 'current location')):
-        return mapped.get('current_residence') or None, None
+        value = mapped.get('current_residence') or None
+        return value, None if value else 'Verified current residence is unavailable.'
     if 'location' in normalized or normalized == 'city':
         return None, 'The generic location field is ambiguous; confirm whether it asks for residence or preferred job location.'
     return None, None
@@ -296,6 +298,18 @@ def _page_submit_guard_script() -> str:
       if (document.documentElement) observe();
       else document.addEventListener('DOMContentLoaded', observe, {once:true});
     })();"""
+
+
+def _route_application_request(route, navigation_hosts: set[str]) -> None:
+    """Block LinkedIn requests entirely and navigation away from the approved ATS."""
+    request = route.request
+    host = (urlparse(request.url).hostname or '').casefold()
+    if host == 'linkedin.com' or host.endswith('.linkedin.com'):
+        route.abort()
+    elif request.is_navigation_request() and host not in navigation_hosts:
+        route.abort()
+    else:
+        route.continue_()
 
 
 def _form_dom_snapshot(page) -> dict:
@@ -584,12 +598,32 @@ class LeverAdapter:
     def fill(self, page, candidate: Candidate, cv_path: Path,
              preferences: ApplicationPreferences | None = None,
              answers: VacancyApplicationAnswers | None = None) -> tuple[FieldResult, ...]:
+        preferences = preferences or ApplicationPreferences()
         parts = _name_parts(candidate.name)
+        try:
+            mapped = map_verified_fields(candidate, preferences)
+        except ApplicationPreparationError as exc:
+            if 'location must identify both city and country' not in str(exc):
+                raise
+            # Lever identity fields remain useful when the profile contains only
+            # a country-level location. Never invent a city to satisfy mapping.
+            city = (preferences.current_residence_city or '').strip()
+            country = (preferences.current_residence_country or '').strip()
+            if not country and ',' in candidate.location:
+                _, country = _city_country(candidate.location)
+            mapped = {
+                'current_residence_city': city,
+                'current_residence': f'{city}, {country}' if city and country else '',
+                'country': country,
+                'preferred_job_location_romania': (preferences.preferred_job_location_romania or '').strip(),
+                'preferred_job_location_moldova': (preferences.preferred_job_location_moldova or '').strip(),
+            }
         verified = {
             'name': candidate.name,
             'full name': candidate.name,
             'first name': parts[0],
             'last name': parts[1],
+            'preferred first name': (preferences.preferred_first_name or '').strip(),
             'email': candidate.email if candidate.email != 'unknown' else '',
             'phone': candidate.telephone if candidate.telephone != 'unknown' else '',
             'phone number': candidate.telephone if candidate.telephone != 'unknown' else '',
@@ -601,8 +635,24 @@ class LeverAdapter:
             label_text=' '.join(label.inner_text().split()).strip().rstrip('*').strip()
             key=label_text.casefold()
             value=verified.get(key)
-            if not value or key not in verified:
-                continue
+            location_note = None
+            if key not in verified or not value:
+                value, location_note = location_value_for_label(label_text, mapped)
+                normalized = ' '.join(key.split())
+                if value is None and location_note is None and (
+                    normalized in {'current country', 'country of residence', 'residential country'}
+                    or ('country' in normalized and any(token in normalized for token in ('current', 'residen')))
+                ):
+                    value = mapped.get('country') or None
+                    location_note = None if value else 'Verified current country is unavailable.'
+                if value is None and location_note is None:
+                    # Unsupported optional fields are skipped; the later required-field
+                    # scan will flag them without attempting a guess.
+                    continue
+                if value is None:
+                    results.append(FieldResult(label_text, 'Needs candidate input',
+                        location_note or 'Location meaning is unclear; no value was entered.'))
+                    continue
             locator=page.get_by_label(label_text, exact=True)
             if locator.count()!=1 or not locator.is_visible():
                 results.append(FieldResult(label_text,'Needs candidate input','Field is missing or ambiguous; no value was entered.'))
@@ -653,7 +703,11 @@ def _matching_private_cv(root: Path, job_id: int, application_url: str) -> Path:
         if metadata.get('job_id')==job_id and metadata.get('application_url')==application_url:
             for filename in ('cv.pdf','tailored_cv.pdf','application_cv.pdf'):
                 candidate_path=metadata_path.parent/filename
-                if candidate_path.is_file():
+                try:
+                    candidate_path.resolve().relative_to(private.resolve())
+                except (OSError, ValueError):
+                    continue
+                if candidate_path.is_file() and candidate_path.suffix.casefold()=='.pdf':
                     return candidate_path
     raise ApplicationPreparationError('A private tailored CV with matching vacancy and application-URL metadata is required.')
 
@@ -663,23 +717,15 @@ ADAPTERS: dict[str, ApplicationFormAdapter] = {'greenhouse': GreenhouseAdapter()
 
 def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
                        hold_browser: bool = True) -> PreparationResult:
-    """Fill supported verified fields, attach CV, and stop at the submit boundary."""
+    """Prepare any shortlisted official Greenhouse vacancy and stop before submission."""
     root = root.resolve()
     job = _load_shortlisted_job(job_id, root)
     _reject_explicitly_ineligible(job_id, root)
     candidate = profile() if root == ROOT else _load_profile(root)
     preferences = load_application_preferences(root)
-    cv_path = root / 'private' / 'application_pilot' / f'job-{job_id}-bitdefender-qa-engineer' / 'cv.pdf'
-    # Job 4 is the only supported pilot, and its database URL is checked against metadata below.
-    if job_id != 4 or job.company.casefold() != 'bitdefender':
-        raise ApplicationPreparationError('The supervised live pilot currently supports Bitdefender vacancy ID 4 only.')
-    metadata_path = cv_path.with_name('application_metadata.json')
-    try:
-        metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        raise ApplicationPreparationError('Private application metadata is missing or invalid.') from None
-    if metadata.get('job_id') != job_id or metadata.get('application_url') != str(job.url):
-        raise ApplicationPreparationError('The private application metadata does not match the selected vacancy URL.')
+    if job.platform.casefold() != 'greenhouse':
+        raise ApplicationPreparationError('Greenhouse preparation requires an official Greenhouse vacancy.')
+    cv_path = _matching_private_cv(root, job_id, str(job.url))
     application_answers = application_answers_for(job_id, job.company, str(job.url), preferences)
     directory, preview_path, state_path = _private_paths(root, job_id)
     directory.mkdir(parents=True, exist_ok=True)
@@ -688,7 +734,10 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
             previous_state = json.loads(state_path.read_text(encoding='utf-8'))
         except (OSError, json.JSONDecodeError):
             previous_state = {}
-        if previous_state.get('status') in {'Submitting', 'Submitted', 'Submission Uncertain'}:
+        if previous_state.get('status') in {
+            'Awaiting approval', 'Ready for Approval', 'Approved', 'Submitting', 'Submitted',
+            'Submission Uncertain',
+        }:
             raise ApplicationPreparationError(
                 'This application has an approval or submission record. Reconcile its state before preparing again.'
             )
@@ -709,16 +758,37 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
     except ImportError:
         raise ApplicationPreparationError('Playwright is not installed. Install project requirements before launching.') from None
 
+    from agent.collectors import check_robots
+    allowed_hosts = {'job-boards.eu.greenhouse.io', 'boards.greenhouse.io'}
+    final_url = str(job.url)
+    with httpx.Client(timeout=30, headers={'User-Agent': 'QAJobAgent/0.1 (supervised application preparation)'},
+                      follow_redirects=False) as client:
+        for _ in range(5):
+            check_robots(client, final_url, interval=1)
+            preflight = client.get(final_url, follow_redirects=False)
+            if preflight.is_redirect:
+                target = urlparse(urljoin(final_url, preflight.headers.get('location', '')))
+                if target.scheme != 'https' or target.hostname not in allowed_hosts:
+                    raise ApplicationPreparationError('Greenhouse redirected outside its official hosts; preparation stopped.')
+                final_url = target.geturl()
+                continue
+            if preflight.status_code >= 400:
+                raise ApplicationPreparationError(f'The official Greenhouse page returned HTTP {preflight.status_code}; preparation stopped.')
+            break
+        else:
+            raise ApplicationPreparationError('Too many redirects on the official Greenhouse application page.')
+
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel='msedge', headless=not headed)
         page = browser.new_page(accept_downloads=False)
         page.add_init_script(_page_submit_guard_script())
-        response = page.goto(str(job.url), wait_until='domcontentloaded', timeout=60_000)
+        page.route('**/*', lambda route: _route_application_request(route, allowed_hosts))
+        browser_response = page.goto(final_url, wait_until='domcontentloaded', timeout=60_000)
         page.wait_for_timeout(1000)
-        if response is None or response.status >= 400:
+        if browser_response is None or browser_response.status >= 400:
             browser.close()
             raise ApplicationPreparationError('The official Greenhouse page did not load successfully.')
-        if urlparse(page.url).hostname not in {'job-boards.eu.greenhouse.io', 'boards.greenhouse.io'}:
+        if urlparse(page.url).hostname not in allowed_hosts:
             browser.close()
             raise ApplicationPreparationError('The application page redirected outside the supported Greenhouse hosts.')
         body = (page.evaluate("document.body ? document.body.innerText : ''") or '').casefold()
@@ -750,7 +820,8 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
         review_snapshot = None
         review_hash = None
         source_hash = None
-        if not candidate_input_fields:
+        pilot_submission_supported = job_id == 4 and job.company.casefold() == 'bitdefender'
+        if pilot_submission_supported and not candidate_input_fields:
             from agent.application_submission import (
                 _load_current_sources,
                 build_review_snapshot,
@@ -761,7 +832,10 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
                 job_id, job, mapped, current_answers, current_cv, results,
                 _form_dom_snapshot(page))
             review_hash = review_fingerprint(review_snapshot)
-        application_state = 'Needs Review' if candidate_input_fields else 'Ready for Approval'
+        # New employers receive preparation only. Their form snapshots are not
+        # eligible for the existing candidate-approved submission state machine.
+        application_state = ('Needs Review' if candidate_input_fields else 'Ready for Approval') \
+            if pilot_submission_supported else ('Needs Review' if candidate_input_fields else 'Prepared')
         result = PreparationResult(job_id=job_id, employer=job.company, role=job.title,
             application_url=str(job.url), status=application_state,
             completed_fields=tuple(item.label for item in completed),
@@ -775,9 +849,10 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
             'review_snapshot': review_snapshot,
             'review_fingerprint': review_hash,
             'screenshot_path': str(preview_image),
-            'final_submission': 'Not attempted; explicit approval for this exact snapshot is required.'
-                if application_state == 'Ready for Approval'
-                else 'Blocked until required candidate review is complete.',
+            'submission_enabled': pilot_submission_supported,
+            'final_submission': ('Not attempted; explicit approval for this exact snapshot is required.'
+                if application_state == 'Ready for Approval' else 'Blocked until required candidate review is complete.')
+                if pilot_submission_supported else 'Not attempted; submission is not enabled for this employer.',
         })
         _write_json(state_path, {'status': result.status, 'job_id': job_id,
             'completed_fields': list(result.completed_fields),
@@ -785,6 +860,7 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
             'application_url': str(job.url), 'preview_path': str(preview_path),
             'review_fingerprint': review_hash,
             'source_fingerprint': source_hash,
+            'submission_enabled': pilot_submission_supported,
             'browser_open': bool(hold_browser)})
         if hold_browser:
             while not page.is_closed():
@@ -799,6 +875,7 @@ def prepare_greenhouse(job_id: int, *, root: Path = ROOT, headed: bool = True,
             'application_url': str(job.url), 'preview_path': str(preview_path),
             'review_fingerprint': review_hash,
             'source_fingerprint': source_hash,
+            'submission_enabled': pilot_submission_supported,
             'browser_open': False})
         return result
 
@@ -818,7 +895,10 @@ def prepare_lever(job_id: int, *, root: Path = ROOT, headed: bool = True,
     if state_path.is_file():
         try: state=json.loads(state_path.read_text(encoding='utf-8'))
         except (OSError,json.JSONDecodeError): state={}
-        if state.get('status') in {'Submitting','Submitted','Submission Uncertain'}:
+        if state.get('status') in {
+            'Awaiting approval', 'Ready for Approval', 'Approved', 'Submitting', 'Submitted',
+            'Submission Uncertain',
+        }:
             raise ApplicationPreparationError('A submission record exists; preparation is blocked pending manual reconciliation.')
     try:
         from playwright.sync_api import sync_playwright
@@ -846,7 +926,7 @@ def prepare_lever(job_id: int, *, root: Path = ROOT, headed: bool = True,
         browser=playwright.chromium.launch(channel='msedge',headless=not headed)
         page=browser.new_page(accept_downloads=False)
         page.add_init_script(_page_submit_guard_script())
-        page.route('**/*',lambda route: route.abort() if route.request.is_navigation_request() and urlparse(route.request.url).hostname!='jobs.lever.co' else route.continue_())
+        page.route('**/*',lambda route: _route_application_request(route, {'jobs.lever.co'}))
         response=page.goto(final_url,wait_until='domcontentloaded',timeout=60_000)
         page.wait_for_timeout(1000)
         if response is None or response.status>=400 or urlparse(page.url).hostname!='jobs.lever.co':
@@ -897,6 +977,15 @@ def _launch_lever_from_dashboard(job_id: int, root: Path = ROOT) -> None:
     _matching_private_cv(root,job_id,str(job.url))
     directory,preview_path,state_path=_private_paths(root,job_id)
     directory.mkdir(parents=True,exist_ok=True)
+    if state_path.is_file():
+        try:
+            previous=json.loads(state_path.read_text(encoding='utf-8'))
+        except (OSError,json.JSONDecodeError):
+            previous={}
+        if previous.get('status') in {
+            'Awaiting approval','Ready for Approval','Approved','Submitting','Submitted','Submission Uncertain',
+        }:
+            raise ApplicationPreparationError('An existing approval or submission record must be reconciled before preparing again.')
     _write_json(state_path,{'status':'Prepared','job_id':job_id,'completed_fields':[],
         'candidate_input_fields':[],'application_url':str(job.url),'preview_path':str(preview_path),
         'browser_open':True,'submission_enabled':False})
@@ -915,8 +1004,9 @@ def _load_profile(root: Path) -> Candidate:
 def _launch_from_dashboard(job_id: int, root: Path = ROOT) -> None:
     job = _load_shortlisted_job(job_id, root)
     _reject_explicitly_ineligible(job_id, root)
-    if job_id != 4 or job.company.casefold() != 'bitdefender':
-        raise ApplicationPreparationError('Supervised preparation currently supports Bitdefender vacancy ID 4 only.')
+    if job.platform.casefold() != 'greenhouse':
+        raise ApplicationPreparationError('Selected vacancy is not an official Greenhouse posting.')
+    _matching_private_cv(root, job_id, str(job.url))
     directory, preview_path, state_path = _private_paths(root, job_id)
     directory.mkdir(parents=True, exist_ok=True)
     if state_path.is_file():
@@ -924,7 +1014,10 @@ def _launch_from_dashboard(job_id: int, root: Path = ROOT) -> None:
             old_state = json.loads(state_path.read_text(encoding='utf-8'))
         except (OSError, json.JSONDecodeError):
             old_state = {}
-        if old_state.get('status') in {'Submitting', 'Submitted', 'Submission Uncertain'}:
+        if old_state.get('status') in {
+            'Awaiting approval', 'Ready for Approval', 'Approved', 'Submitting', 'Submitted',
+            'Submission Uncertain',
+        }:
             raise ApplicationPreparationError(
                 'This application has an approval or submission record. Reconcile its state before preparing again.'
             )
@@ -932,7 +1025,8 @@ def _launch_from_dashboard(job_id: int, root: Path = ROOT) -> None:
         'completed_fields': [], 'candidate_input_fields': [
             {'label': label, 'status': 'Needs candidate input', 'note': note}
             for label, note in REVIEW_FIELDS],
-        'application_url': str(job.url), 'preview_path': str(preview_path), 'browser_open': True})
+        'application_url': str(job.url), 'preview_path': str(preview_path), 'browser_open': True,
+        'submission_enabled': job_id == 4 and job.company.casefold() == 'bitdefender'})
     subprocess.Popen([sys.executable, '-m', 'agent.application_workflow', '--job-id', str(job_id), '--headed'],
                      cwd=str(root), close_fds=True)
 
