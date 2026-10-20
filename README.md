@@ -96,6 +96,10 @@ Follow [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for installation, daily Task Schedul
 
 The dashboard defaults to rule-based matching; its OpenAI checkbox is opt-in. Region filters group Cyprus with EU countries and support geographic-priority ranking. A failed board transaction rolls back before processing the next board. Malformed postings are isolated with warnings. Logs from dashboard and CLI rotate in `data/agent.log`. The full runtime remains unverified in the managed environment.
 
+## Manual vacancy entry
+
+Open the dashboard at `http://127.0.0.1:8501`, choose **Manual application tracker**, then expand **Import individual or bulk vacancy URLs**. If a public job page has no structured metadata, use **Manual entry when a page has no structured job metadata**. Enter only details seen on the individual vacancy page; leave uncertain location or work-arrangement fields as `Unknown`. Entries default to **Candidate-entered / unverified**. The stronger **Third-party listing verified** and **Official employer verified** labels require explicit active-listing confirmation, and the official label also requires confirmation that the employer's career page was checked. Duplicate URLs already in discovery or the manual list are not inserted again. LinkedIn and the unverified Jobs.md host are excluded. Manual entries are stored in the local ignored SQLite database, and the tracker never submits applications.
+
 See [DELIVERY.md](DELIVERY.md) before putting this source into a private Git repository. Keep the private profile separately; no repository was created or pushed in this environment.
 
 

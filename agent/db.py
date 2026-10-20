@@ -96,6 +96,18 @@ class ManualApplicationRecord(Base):
     updated = Column(String, default=now)
 
 
+class ManualVacancyLead(Base):
+    """Provenance for manually entered vacancy fields that lack structured metadata."""
+    __tablename__ = 'manual_vacancy_leads'
+    id = Column(Integer, primary_key=True)
+    job_id = Column(Integer, ForeignKey('jobs.id'), unique=True, nullable=False)
+    evidence_status = Column(String, nullable=False, default='Candidate-entered / unverified')
+    country = Column(String, nullable=False, default='Unknown')
+    city = Column(String, nullable=False, default='Unknown')
+    listing_notes = Column(Text, nullable=False, default='')
+    created = Column(String, default=now)
+
+
 class SearchDiagnostic(Base):
     """Additive table: historical databases need no destructive schema migration."""
     __tablename__ = 'search_diagnostics'

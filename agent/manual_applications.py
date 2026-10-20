@@ -17,10 +17,15 @@ from urllib.robotparser import RobotFileParser
 import httpx
 from sqlalchemy import select
 
-from agent.db import Company, JobObservation, JobRow, ManualApplicationRecord, Source
+from agent.db import Company, JobObservation, JobRow, ManualApplicationRecord, ManualVacancyLead, Source
 from agent.models import Job, now
 
 MANUAL_STATUSES = ('New', 'Interested', 'Applied', 'Interview', 'Rejected', 'Offer', 'Closed')
+LEAD_EVIDENCE_STATUSES = (
+    'Candidate-entered / unverified',
+    'Third-party listing verified',
+    'Official employer verified',
+)
 APPLIED_SOURCE = 'Candidate Confirmed'
 TRACKER_SOURCE = 'Manual Tracker'
 SUPPORTED_HOSTS = {
@@ -311,6 +316,75 @@ def import_vacancy(session, url: str, *, posting: dict | None = None) -> dict:
     session.add(ManualApplicationRecord(job_id=row.id, status='New', source=TRACKER_SOURCE))
     session.flush()
     return {'status': 'imported', 'job_id': row.id, 'title': job.title}
+
+
+def add_manual_vacancy(session, *, employer: str, title: str, url: str,
+                       country: str = 'Unknown', city: str = 'Unknown',
+                       work_arrangement: str = 'Unknown', source: str = 'Unknown',
+                       notes: str = '', evidence_status: str = 'Candidate-entered / unverified',
+                       confirmed_active: bool = False, confirmed_official: bool = False) -> dict:
+    """Add a manually described vacancy without pretending absent metadata was retrieved.
+
+    The default record is explicitly unverified. Higher evidence labels require the
+    candidate to affirm that the individual listing is active, and that an official
+    employer page was checked for the strongest label.
+    """
+    values = {name: (value or '').strip() for name, value in {
+        'employer': employer, 'title': title, 'url': url, 'country': country,
+        'city': city, 'work_arrangement': work_arrangement, 'source': source,
+        'notes': notes,
+    }.items()}
+    if not values['employer'] or not values['title'] or not values['url']:
+        raise ImportRejected('Employer, job title, and an individual vacancy URL are required.')
+    if evidence_status not in LEAD_EVIDENCE_STATUSES:
+        raise ImportRejected('Choose one of the supported evidence labels.')
+    if evidence_status != 'Candidate-entered / unverified' and not confirmed_active:
+        raise ImportRejected('Confirm that this individual vacancy page is currently active before marking it verified.')
+    if evidence_status == 'Official employer verified' and not confirmed_official:
+        raise ImportRejected('Confirm that the active vacancy was checked on the employer’s official career site.')
+
+    normalized = normalize_job_url(values['url'])
+    existing = _existing_job(session, normalized)
+    if existing:
+        return {'status': 'duplicate', 'job_id': existing.id, 'title': json.loads(existing.payload).get('title', 'Unknown')}
+    host = urlsplit(normalized).hostname or 'unknown'
+    company = session.scalar(select(Company).where(Company.name == values['employer']))
+    if company is None:
+        company = Company(name=values['employer'])
+        session.add(company)
+        session.flush()
+    source_key = f'manual-entry:{host}'
+    source_row = session.scalar(select(Source).where(Source.platform == 'Manual entry', Source.board == source_key))
+    if source_row is None:
+        source_row = Source(company_id=company.id, platform='Manual entry', board=source_key)
+        session.add(source_row)
+        session.flush()
+
+    location_parts = [item for item in (values['city'], values['country']) if item.casefold() != 'unknown']
+    location = ', '.join(location_parts) or 'Unknown'
+    job = Job(
+        title=values['title'], company=values['employer'], location=location,
+        remote=values['work_arrangement'], description='Unknown', requirements='Unknown',
+        employment_type='Unknown', salary=None, published=None, url=values['url'],
+        platform='Manual entry', source_id=str(source_row.id), source_name=values['source'] or 'Unknown',
+        source_type='manual-import', source_url=values['url'],
+        remote_permitted_locations=[], work_authorization_requirements='Unknown',
+        relocation_requirement='Unknown', visa_sponsorship='Unknown',
+        contractor_eligibility='Unknown', employer_of_record_availability='Unknown',
+    )
+    identity = f'manual-lead:{normalized}'
+    row = JobRow(source_id=source_row.id, identity=identity, canonical_url=normalized,
+                 fingerprint=identity, payload=job.model_dump_json(),
+                 first_discovered=now(), last_checked=now(), status='New')
+    session.add(row)
+    session.flush()
+    session.add(ManualApplicationRecord(job_id=row.id, status='New', source=TRACKER_SOURCE))
+    session.add(ManualVacancyLead(
+        job_id=row.id, evidence_status=evidence_status, country=values['country'] or 'Unknown',
+        city=values['city'] or 'Unknown', listing_notes=values['notes'],
+    ))
+    session.flush()
+    return {'status': 'imported', 'job_id': row.id, 'title': job.title, 'evidence_status': evidence_status}
 
 
 def set_manual_application(session, job_id: int, status: str, *, applied_date: str | None = None,
