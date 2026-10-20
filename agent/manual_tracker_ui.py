@@ -64,7 +64,8 @@ def _rows(session):
             'Job URL': str(job.url), 'Date discovered': row.first_discovered[:10] if row.first_discovered else 'Unknown',
             'Date applied': tracking.applied_date if tracking and tracking.applied_date else '',
             'Application status': tracking.status if tracking else 'New',
-            'Notes': (lead.listing_notes if lead and lead.listing_notes else (tracking.notes if tracking else '')),
+            'Listing notes': lead.listing_notes if lead else '',
+            'Notes': tracking.notes if tracking else '',
             '_priority': priority_group(job),
         })
     return output
@@ -170,7 +171,7 @@ def render_manual_tracker(factory):
         st.caption('Geographic priority is a sorting aid; uncertain eligibility remains visible, and professional score is shown separately. Unknown fields are not inferred.')
         display_columns = ['ID', 'Company', 'Job title', 'Country', 'City', 'Work arrangement',
                            'Professional match', 'Match score', 'Geographic eligibility', 'Listing source', 'Source verification',
-                           'Application source', 'Job URL', 'Date discovered', 'Date applied', 'Application status', 'Notes']
+                           'Application source', 'Job URL', 'Date discovered', 'Date applied', 'Application status', 'Listing notes', 'Notes']
         st.dataframe(pd.DataFrame([{key: row[key] for key in display_columns} for row in filtered]),
                      hide_index=True, use_container_width=True,
                      column_config={'Job URL': st.column_config.LinkColumn('Job URL', validate='^https://.*$')},

@@ -137,10 +137,14 @@ def test_manual_entry_keeps_missing_fields_unknown_and_review_status_unchanged(d
         job = Job.model_validate_json(created.payload)
         assert (job.location, job.remote, job.description, job.requirements) == ('Unknown', 'Unknown', 'Unknown', 'Unknown')
         assert created.status == 'New'
-        assert session.scalar(select(ManualApplicationRecord).where(ManualApplicationRecord.job_id == created.id)).notes == 'Check location eligibility.'
+        assert session.scalar(select(ManualApplicationRecord).where(ManualApplicationRecord.job_id == created.id)).notes == ''
         lead = session.scalar(select(ManualVacancyLead).where(ManualVacancyLead.job_id == created.id))
         assert lead.evidence_status == 'Candidate-entered / unverified'
         assert (lead.country, lead.city) == ('Unknown', 'Unknown')
+        assert lead.listing_notes == 'Check location eligibility.'
+        set_manual_application(session, created.id, 'Interested', notes='Candidate follow-up note')
+        assert lead.listing_notes == 'Check location eligibility.'
+        assert session.scalar(select(ManualApplicationRecord).where(ManualApplicationRecord.job_id == created.id)).notes == 'Candidate follow-up note'
         assert session.get(JobRow, 101).status == 'Shortlisted'
 
 

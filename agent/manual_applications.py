@@ -378,8 +378,7 @@ def add_manual_vacancy(session, *, employer: str, title: str, url: str,
                  first_discovered=now(), last_checked=now(), status='New')
     session.add(row)
     session.flush()
-    session.add(ManualApplicationRecord(job_id=row.id, status='New', source=TRACKER_SOURCE,
-                                        notes=values['notes']))
+    session.add(ManualApplicationRecord(job_id=row.id, status='New', source=TRACKER_SOURCE))
     session.add(ManualVacancyLead(
         job_id=row.id, evidence_status=evidence_status, country=values['country'] or 'Unknown',
         city=values['city'] or 'Unknown', listing_notes=values['notes'],
