@@ -1,10 +1,13 @@
 from pathlib import Path
+import json
+import sqlite3
 
 import pytest
 
 from agent.cv_workflow import (
     CvValidationError, render_cv, tailor_cv, validate_cv_document,
     validate_private_git_policy, _section, _application_metadata,
+    generate_vacancy_cv_draft,
 )
 from agent.models import Candidate, CandidateExperience, Job
 
@@ -227,3 +230,55 @@ def test_private_outputs_are_git_ignored():
         Path("private/application_pilot/job-40-xebia-cee-senior-qa-automation-engineer/cv_draft.md"),
         Path("private/application_pilot/job-40-xebia-cee-senior-qa-automation-engineer/application_metadata.json"),
     ])
+
+
+def test_vacancy_cv_draft_can_be_generated_without_changing_review_status(tmp_path, monkeypatch, candidate):
+    import agent.cv_workflow as workflow
+
+    target = 'sqlite:///' + str(tmp_path / 'jobs.db')
+    monkeypatch.setenv('DATABASE_URL', target)
+    job = Job(title='QA Engineer', company='Synthetic Employer', location='Remote', remote='Remote',
+              description='Synthetic job description',
+              url='https://jobs.lever.co/synthetic/123', platform='lever', source_id='123')
+    with sqlite3.connect(tmp_path / 'jobs.db') as connection:
+        connection.execute('CREATE TABLE jobs (id INTEGER PRIMARY KEY, status TEXT, payload TEXT)')
+        connection.execute('INSERT INTO jobs(id,status,payload) VALUES(56,?,?)',
+                           ('New', job.model_dump_json()))
+    master = tmp_path / 'private' / 'cv' / 'master_cv.md'
+    master.parent.mkdir(parents=True)
+    master.write_text('Synthetic verified master CV', encoding='utf-8')
+    monkeypatch.setattr(workflow, 'profile', lambda: candidate)
+    monkeypatch.setattr(workflow, 'validate_cv_document', lambda *args, **kwargs: None)
+    monkeypatch.setattr(workflow, 'tailor_cv', lambda *args, **kwargs: 'Synthetic tailored draft')
+    monkeypatch.setattr(workflow, 'validate_private_git_policy', lambda *args, **kwargs: None)
+
+    output = workflow.generate_vacancy_cv_draft(56, tmp_path)
+    metadata = json.loads(output.with_name('application_metadata.json').read_text(encoding='utf-8'))
+    with sqlite3.connect(tmp_path / 'jobs.db') as connection:
+        status = connection.execute('SELECT status FROM jobs WHERE id=56').fetchone()[0]
+    assert output.is_file() and output.read_text(encoding='utf-8') == 'Synthetic tailored draft'
+    assert metadata['job_id'] == 56 and metadata['application_url'] == str(job.url)
+    assert status == 'New'
+
+
+def test_vacancy_cv_draft_cannot_be_written_outside_private(tmp_path, monkeypatch, candidate):
+    import agent.cv_workflow as workflow
+
+    target = 'sqlite:///' + str(tmp_path / 'jobs.db')
+    monkeypatch.setenv('DATABASE_URL', target)
+    job = Job(title='QA Engineer', company='Synthetic Employer', location='Remote', remote='Remote',
+              description='Synthetic job description', url='https://jobs.lever.co/synthetic/123',
+              platform='lever', source_id='123')
+    with sqlite3.connect(tmp_path / 'jobs.db') as connection:
+        connection.execute('CREATE TABLE jobs (id INTEGER PRIMARY KEY, status TEXT, payload TEXT)')
+        connection.execute('INSERT INTO jobs(id,status,payload) VALUES(56,?,?)',
+                           ('New', job.model_dump_json()))
+    master = tmp_path / 'private' / 'cv' / 'master_cv.md'
+    master.parent.mkdir(parents=True)
+    master.write_text('Synthetic verified master CV', encoding='utf-8')
+    monkeypatch.setattr(workflow, 'profile', lambda: candidate)
+    monkeypatch.setattr(workflow, 'validate_cv_document', lambda *args, **kwargs: None)
+    monkeypatch.setattr(workflow, 'tailor_cv', lambda *args, **kwargs: 'Synthetic tailored draft')
+    monkeypatch.setattr(workflow, 'validate_private_git_policy', lambda *args, **kwargs: None)
+    with pytest.raises(CvValidationError, match='inside the private directory'):
+        workflow.generate_vacancy_cv_draft(56, tmp_path, output_directory=tmp_path / 'public-output')

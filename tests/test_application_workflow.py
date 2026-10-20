@@ -17,6 +17,7 @@ from agent.application_workflow import (
     ApplicationPreferences,
     location_value_for_label,
     load_application_preferences,
+    LeverAdapter,
 )
 
 
@@ -425,6 +426,199 @@ def test_greenhouse_mock_form_verifies_names_and_uploads_cv(tmp_path, candidate)
     assert not any('authorization' in field or 'consent' in field for field in page.values)
 
 
+def test_lever_adapter_fills_only_verified_identity_and_residence_and_flags_unknowns(tmp_path, candidate):
+    class LeverPage(FakePage):
+        def __init__(self):
+            super().__init__()
+            self.labels = [
+                ('First Name*', 'first'), ('Last Name*', 'last'), ('Email*', 'email'),
+                ('Phone*', 'phone'), ('Current City', 'current-city'),
+                ('Location (City)*', 'generic-location'),
+                ('Are you authorized to work in Romania?*', 'authorization'),
+                ('Consent to privacy policy*', 'consent'), ('LinkedIn URL*', 'linkedin'),
+            ]
+            self.snapshot = {
+                'forms': [{'action': 'https://jobs.lever.co/example/123', 'method': 'POST', 'submitControls': []}],
+                'fields': [
+                    {'label': label.rstrip('*'), 'required': label.endswith('*'), 'value': ''}
+                    for label, _ in self.labels
+                ] + [{'label': 'Resume', 'required': True, 'value': []}],
+            }
+
+        def get_by_label(self, label, exact=False):
+            return FakeLocator(store=self.values, key='lever:' + label)
+
+        def evaluate(self, expression):
+            if 'Array.from(document.forms)' in expression:
+                return self.snapshot
+            return None
+
+    cv = tmp_path / 'tailored.pdf'
+    cv.write_bytes(b'%PDF-1.4 fixture')
+    page = LeverPage()
+    results = LeverAdapter().fill(page, _full_candidate(candidate), cv, _confirmed_preferences())
+    assert page.values['lever:First Name'] == 'Synthetic'
+    assert page.values['lever:Last Name'] == 'Test Candidate'
+    assert page.values['lever:Email'] == 'synthetic@example.invalid'
+    assert page.values['lever:Phone'] == '+37300000000'
+    assert page.values['lever:Current City'] == 'Sample City'
+    assert 'lever:Location (City)' not in page.values
+    assert not any(key in page.values for key in ('lever:Are you authorized to work in Romania?',
+                                                   'lever:Consent to privacy policy', 'lever:LinkedIn URL'))
+    assert next(item for item in results if item.label == 'Location (City)').status == 'Needs candidate input'
+    assert next(item for item in results if item.label.startswith('Are you authorized')).status == 'Needs candidate input'
+    assert next(item for item in results if item.label.startswith('Consent')).status == 'Needs candidate input'
+    assert next(item for item in results if item.label == 'Resume/CV').status == 'Uploaded'
+
+
+def test_matching_private_cv_is_scoped_to_vacancy_url_and_pdf(tmp_path):
+    import json
+    from agent.application_workflow import _matching_private_cv
+
+    application = 'https://job-boards.greenhouse.io/example/jobs/345'
+    private_job = tmp_path / 'private' / 'application_pilot' / 'job-40-example'
+    private_job.mkdir(parents=True)
+    (private_job / 'application_metadata.json').write_text(json.dumps({
+        'job_id': 40, 'application_url': application,
+    }), encoding='utf-8')
+    cv = private_job / 'cv.pdf'
+    cv.write_bytes(b'%PDF-1.4 fixture')
+    assert _matching_private_cv(tmp_path, 40, application) == cv
+    with pytest.raises(ApplicationPreparationError, match='matching vacancy'):
+        _matching_private_cv(tmp_path, 41, application)
+    with pytest.raises(ApplicationPreparationError, match='matching vacancy'):
+        _matching_private_cv(tmp_path, 40, application + '?changed=1')
+
+
+def test_generalized_greenhouse_preparation_stays_non_submitting_for_new_employer(
+        tmp_path, monkeypatch, candidate):
+    import json
+    import sys
+    from types import ModuleType, SimpleNamespace
+    import agent.application_workflow as workflow
+    from agent.application_workflow import FieldResult
+    from agent.models import Job
+
+    job = Job(title='Senior QA Automation Engineer', company='Xebia CEE', location='European Union',
+        remote='Unknown', description='Synthetic form-preparation fixture',
+        url='https://boards.greenhouse.io/xebiacee/jobs/5836999004',
+        platform='greenhouse', source_id='5836999004')
+    cv = tmp_path / 'verified-private-cv.pdf'
+    cv.write_bytes(b'%PDF-1.4 fixture')
+
+    class Buttons:
+        def count(self): return 0
+
+    class Page:
+        url = str(job.url)
+        def add_init_script(self, script): self.guard_added = 'preventDefault' in script
+        def route(self, *args): self.route_installed = True
+        def goto(self, *args, **kwargs): return SimpleNamespace(status=200)
+        def wait_for_timeout(self, *args): pass
+        def evaluate(self, script): return 'Synthetic employer application form'
+        def locator(self, selector): return Buttons()
+        def screenshot(self, path, full_page): Path(path).write_bytes(b'synthetic screenshot')
+        def is_closed(self): return True
+        def close(self): pass
+
+    page = Page()
+    class Browser:
+        def new_page(self, **kwargs): return page
+        def close(self): pass
+    class PlaywrightContext:
+        chromium = SimpleNamespace(launch=lambda **kwargs: Browser())
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    api = ModuleType('playwright.sync_api')
+    api.sync_playwright = lambda: PlaywrightContext()
+    package = ModuleType('playwright')
+    package.sync_api = api
+    monkeypatch.setitem(sys.modules, 'playwright', package)
+    monkeypatch.setitem(sys.modules, 'playwright.sync_api', api)
+
+    class PreflightResponse:
+        status_code = 200
+        is_redirect = False
+        headers = {}
+    class HttpClient:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, *args, **kwargs): return PreflightResponse()
+    monkeypatch.setattr(workflow.httpx, 'Client', HttpClient)
+    monkeypatch.setattr('agent.collectors.check_robots', lambda *args, **kwargs: 404)
+
+    class Adapter:
+        def fill(self, *args):
+            return (FieldResult('Which cooperation type do you prefer?*', 'Needs candidate input',
+                                'Employer-specific answer is not in verified candidate data.'),)
+
+    monkeypatch.setattr(workflow, '_load_shortlisted_job', lambda *args: job)
+    monkeypatch.setattr(workflow, '_reject_explicitly_ineligible', lambda *args: None)
+    monkeypatch.setattr(workflow, '_load_profile', lambda *args: _full_candidate(candidate))
+    monkeypatch.setattr(workflow, 'load_application_preferences', lambda *args: ApplicationPreferences())
+    monkeypatch.setattr(workflow, '_matching_private_cv', lambda *args: cv)
+    monkeypatch.setitem(workflow.ADAPTERS, 'greenhouse', Adapter())
+
+    result = workflow.prepare_greenhouse(40, root=tmp_path, headed=True, hold_browser=False)
+    preview = json.loads(Path(result.preview_path).read_text(encoding='utf-8'))
+    state_path = tmp_path / 'private' / 'application_runs' / 'job-40' / 'application_state.json'
+    state = json.loads(state_path.read_text(encoding='utf-8'))
+    assert result.status == 'Needs Review'
+    assert 'Which cooperation type do you prefer?*' in result.candidate_input_fields
+    assert preview['submission_enabled'] is False
+    assert 'submission is not enabled' in preview['final_submission']
+    assert state['submission_enabled'] is False
+    assert page.guard_added
+    assert page.route_installed
+    assert Path(preview['screenshot_path']).is_file()
+
+
+def test_browser_request_guard_blocks_linkedin_and_external_navigation():
+    from types import SimpleNamespace
+    from agent.application_workflow import _route_application_request
+
+    class Route:
+        def __init__(self, url, navigation):
+            self.request = SimpleNamespace(url=url, is_navigation_request=lambda: navigation)
+            self.action = None
+        def abort(self): self.action = 'abort'
+        def continue_(self): self.action = 'continue'
+
+    linkedin = Route('https://www.linkedin.com/jobs/view/123', False)
+    external_navigation = Route('https://example.com/form', True)
+    greenhouse_navigation = Route('https://boards.greenhouse.io/example/jobs/123', True)
+    _route_application_request(linkedin, {'boards.greenhouse.io'})
+    _route_application_request(external_navigation, {'boards.greenhouse.io'})
+    _route_application_request(greenhouse_navigation, {'boards.greenhouse.io'})
+    assert linkedin.action == 'abort'
+    assert external_navigation.action == 'abort'
+    assert greenhouse_navigation.action == 'continue'
+
+
+def test_greenhouse_preparation_preserves_existing_awaiting_approval_state(tmp_path, monkeypatch, candidate):
+    import json
+    import agent.application_workflow as workflow
+    from agent.models import Job
+
+    job = Job(title='QA Engineer', company='Bitdefender', location='Bucharest', remote='Unknown',
+        description='Synthetic fixture',
+        url='https://job-boards.eu.greenhouse.io/scbitdefendersrl/jobs/4926040101',
+        platform='greenhouse', source_id='4926040101')
+    state_path = tmp_path / 'private' / 'application_runs' / 'job-4' / 'application_state.json'
+    state_path.parent.mkdir(parents=True)
+    original = {'job_id': 4, 'status': 'Awaiting approval', 'review_fingerprint': 'preserve-this'}
+    state_path.write_text(json.dumps(original), encoding='utf-8')
+    monkeypatch.setattr(workflow, '_load_shortlisted_job', lambda *args: job)
+    monkeypatch.setattr(workflow, '_reject_explicitly_ineligible', lambda *args: None)
+    monkeypatch.setattr(workflow, '_load_profile', lambda *args: _full_candidate(candidate))
+    monkeypatch.setattr(workflow, 'load_application_preferences', lambda *args: ApplicationPreferences())
+    monkeypatch.setattr(workflow, '_matching_private_cv', lambda *args: tmp_path / 'cv.pdf')
+    with pytest.raises(ApplicationPreparationError, match='approval or submission record'):
+        workflow.prepare_greenhouse(4, root=tmp_path, headed=False, hold_browser=False)
+    assert json.loads(state_path.read_text(encoding='utf-8')) == original
+
+
 def test_unknown_required_field_is_flagged_for_candidate_review(tmp_path, candidate):
     cv = tmp_path / 'synthetic-cv.pdf'
     cv.write_bytes(b'%PDF-1.4 synthetic fixture')
@@ -541,44 +735,47 @@ def test_dashboard_prepare_action_is_shortlisted_only_and_does_not_change_status
     shutil.copy(Path(__file__).resolve().parents[1] / 'config' / 'search_rules.yaml',
                 tmp_path / 'config' / 'search_rules.yaml')
     factory = database(target)
-    job = Job(title='QA Engineer', company='Bitdefender', location='Bucharest', remote='Unknown',
+    job = Job(title='Senior QA Automation Engineer', company='Xebia CEE', location='Romania', remote='Unknown',
               description='Synthetic QA testing with Playwright and regression tests.',
               requirements='Playwright',
-              url='https://job-boards.eu.greenhouse.io/scbitdefendersrl/jobs/4926040101',
-              platform='greenhouse', source_id='4926040101')
+              url='https://job-boards.greenhouse.io/xebiacee/jobs/5836999004',
+              platform='greenhouse', source_id='5836999004')
     match = Match(score=85, matching_skills=['Playwright'], missing_skills=[], mandatory_requirements=[],
                   eligibility='Needs Review', explanation='Synthetic test match', recommendation='Good Match',
                   method='rules', professional_score=85, professional_fit='Good Match',
                   professional_reason='Synthetic test match', geographic_reason='Synthetic review',
                   in_main_recommendations=True)
     with factory() as session:
-        company = Company(name='Bitdefender')
+        company = Company(name='Xebia CEE')
         session.add(company)
         session.flush()
-        source = Source(company_id=company.id, platform='greenhouse', board='scbitdefendersrl')
+        source = Source(company_id=company.id, platform='greenhouse', board='xebiacee')
         session.add(source)
         session.flush()
-        row = JobRow(id=4, source_id=source.id, identity='greenhouse:scbitdefendersrl:4926040101',
+        row = JobRow(id=40, source_id=source.id, identity='greenhouse:xebiacee:5836999004',
                      canonical_url=str(job.url), fingerprint='synthetic-fingerprint',
                      payload=job.model_dump_json(), status='Shortlisted')
         session.add(row)
         session.flush()
-        session.add(MatchRow(job_id=4, payload=match.model_dump_json(), version=match.version))
+        session.add(MatchRow(job_id=40, payload=match.model_dump_json(), version=match.version))
         session.commit()
     launched = []
+    dummy_cv = tmp_path / 'synthetic-cv.pdf'
+    dummy_cv.write_bytes(b'%PDF-1.4 fixture')
+    monkeypatch.setattr(workflow, '_matching_private_cv', lambda *args: dummy_cv)
     monkeypatch.setattr(workflow, '_launch_from_dashboard', lambda job_id: launched.append(job_id))
 
     app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
     assert not app.exception
     assert not any(button.label == 'Prepare Application' for button in app.button)
     frame = app.dataframe[0].value
-    row_index = int(frame.index[frame['ID'] == 4][0])
+    row_index = int(frame.index[frame['ID'] == 40][0])
     app.session_state[app.dataframe[0].key] = {'selection': {'rows': [row_index], 'columns': [], 'cells': []}}
     app.run()
     prepare = next(button for button in app.button if button.label == 'Prepare Application')
     prepare.click().run()
     assert not app.exception
-    assert launched == [4]
+    assert launched == [40]
     with factory() as session:
         statuses = {row.id: row.status for row in session.scalars(select(JobRow))}
-    assert statuses == {4: 'Shortlisted'}
+    assert statuses == {40: 'Shortlisted'}
