@@ -22,6 +22,7 @@ from agent.application_submission import (
     load_application_review,
     reconcile_pending_submissions,
 )
+from agent.manual_tracker_ui import render_manual_tracker
 
 def _has_matching_private_cv(root, job_id, application_url):
     try:
@@ -50,7 +51,8 @@ except Exception as exc:
     st.error(f'Cannot read search rules: {type(exc).__name__}. Check config/search_rules.yaml.')
     st.stop()
 use_ai = st.sidebar.checkbox('Use OpenAI when configured',value=False,help='Optional: sends structured professional profile and job text to OpenAI. Rules work without an API key.')
-if st.button('Discover jobs now'):
+dashboard_view = st.sidebar.radio('Dashboard',['Manual application tracker','Vacancy discovery and review'],key='dashboard-view')
+if dashboard_view == 'Vacancy discovery and review' and st.button('Discover jobs now'):
     try:
         with st.spinner('Querying configured public employer boards…'):
             result = discover(use_ai=use_ai)
@@ -63,6 +65,9 @@ try:
     factory = database()
 except Exception as exc:
     st.error(f'Cannot open SQLite database: {type(exc).__name__}. Check DATABASE_URL and folder permissions.')
+    st.stop()
+if dashboard_view == 'Manual application tracker':
+    render_manual_tracker(factory)
     st.stop()
 sync_results = reconcile_pending_submissions(ROOT, factory)
 if sync_results.get('Conflict', 0):

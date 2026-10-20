@@ -83,6 +83,19 @@ class ApplicationRecord(Base):
     status = Column(String)
 
 
+class ManualApplicationRecord(Base):
+    """Candidate-maintained application tracking, separate from agent workflow state."""
+    __tablename__ = 'manual_application_records'
+    id = Column(Integer, primary_key=True)
+    job_id = Column(Integer, ForeignKey('jobs.id'), unique=True, nullable=False)
+    status = Column(String, nullable=False, default='New')
+    source = Column(String, nullable=False, default='Manual Tracker')
+    applied_date = Column(String)
+    notes = Column(Text, nullable=False, default='')
+    created = Column(String, default=now)
+    updated = Column(String, default=now)
+
+
 class SearchDiagnostic(Base):
     """Additive table: historical databases need no destructive schema migration."""
     __tablename__ = 'search_diagnostics'

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import HttpUrl
 from streamlit.testing.v1 import AppTest
+from tests.support import discovery_dashboard_app_test
 
 from agent.application_workflow import (
     ApplicationPreparationError,
@@ -568,7 +569,7 @@ def test_dashboard_prepare_action_is_shortlisted_only_and_does_not_change_status
     launched = []
     monkeypatch.setattr(workflow, '_launch_from_dashboard', lambda job_id: launched.append(job_id))
 
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    app = discovery_dashboard_app_test()
     assert not app.exception
     assert not any(button.label == 'Prepare Application' for button in app.button)
     frame = app.dataframe[0].value

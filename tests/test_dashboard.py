@@ -2,6 +2,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 from streamlit.testing.v1 import AppTest
+from tests.support import discovery_dashboard_app_test
 from agent.db import database, Company, Source, JobRow, MatchRow
 from agent.discovery import upsert_job
 from agent.models import Job
@@ -32,7 +33,7 @@ def test_dashboard_load_and_review(tmp_path, monkeypatch, candidate, populated):
             old_row, _ = upsert_job(session,excluded,source)
             session.add(MatchRow(job_id=old_row.id,payload=evaluate(excluded,candidate,rules(),False).model_dump_json()))
             session.commit()
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    app = discovery_dashboard_app_test()
     assert not app.exception
     if populated:
         assert app.metric[0].value == '1'

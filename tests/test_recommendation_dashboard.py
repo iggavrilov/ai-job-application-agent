@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 from sqlalchemy import select
 from streamlit.testing.v1 import AppTest
+from tests.support import discovery_dashboard_app_test
 from agent.db import database, Company, Source, JobRow, MatchRow, CandidateProfile
 from agent.discovery import upsert_job
 from agent.models import Job
@@ -36,7 +37,7 @@ def test_main_list_excludes_geography_with_auditable_reason(tmp_path,monkeypatch
     target='sqlite:///'+str(tmp_path/'dashboard.db')
     monkeypatch.setenv('DATABASE_URL',target)
     factory=database(target);seed(factory,candidate)
-    app=AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py')).run(timeout=30)
+    app=discovery_dashboard_app_test()
     assert not app.exception and app.metric[0].value=='1'
     assert app.dataframe[0].value['Location'].tolist()==['Moldova']
     assert next(widget for widget in app.selectbox if widget.label=='Rank by').value=='Professional score'
@@ -54,7 +55,7 @@ def test_main_list_excludes_geography_with_auditable_reason(tmp_path,monkeypatch
 def test_legacy_snapshots_are_reassessed_without_private_profile_or_history_rewrite(tmp_path,monkeypatch,candidate):
     target='sqlite:///'+str(tmp_path/'legacy.db');monkeypatch.setenv('DATABASE_URL',target)
     factory=database(target);seed(factory,candidate,legacy=True)
-    app=AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py')).run(timeout=30)
+    app=discovery_dashboard_app_test()
     assert not app.exception and app.metric[0].value=='1'
     assert app.dataframe[0].value['Location'].tolist()==['Moldova']
     with factory() as session:
@@ -73,7 +74,7 @@ def test_grouped_postings_expose_each_source_url(tmp_path,monkeypatch,candidate)
         _,is_new=upsert_job(session,alias,source)
         assert not is_new
         session.commit()
-    app=AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py')).run(timeout=30)
+    app=discovery_dashboard_app_test()
     assert not app.exception and app.metric[0].value=='1'
     assert app.dataframe[0].value.iloc[0]['Source postings']==2
     table=app.dataframe[0]

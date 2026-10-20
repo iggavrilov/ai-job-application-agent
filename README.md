@@ -17,6 +17,8 @@ Copy-Item .env.example .env
 
 Open http://127.0.0.1:8501. Keep `candidate_profile.json` locally; it is deliberately ignored by Git. If copying a tracked checkout, supply this private file separately using `agent.models.Candidate` as the schema. Create or restore this private file from your actual CV; no personal profile is shipped in Git. Unknown contact details, citizenship, work authorization and salary preferences stay unknown; no language proficiency is inferred. Optional local PDF extraction:
 
+The sidebar's **Dashboard** switch opens **Manual application tracker**. Use this view to filter vacancies, open each original job posting, record a candidate-controlled status/date/notes, and export the filtered table as CSV. Paste one official individual vacancy URL per line under **Import individual or bulk vacancy URLs**; duplicates are detected by normalized vacancy URL. Import is read-only and checks robots.txt and individual `JobPosting` metadata. Search/listing pages and LinkedIn are excluded. `Jobs.md` is not enabled until its source can be verified. The manual tracker is separate from the agent's preparation records and does not submit applications.
+
 ```powershell
 .\.venv\Scripts\python.exe -m agent.cli extract-cv --pdf "C:\private\candidate-cv.pdf"
 ```

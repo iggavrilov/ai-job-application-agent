@@ -104,10 +104,11 @@ def test_repair_rolls_back_atomically(tmp_path,candidate):
 def test_dashboard_recovers_and_exposes_both_same_title_openings(tmp_path,candidate,monkeypatch):
     from pathlib import Path
     from streamlit.testing.v1 import AppTest
+    from tests.support import discovery_dashboard_app_test
     target='sqlite:///'+str(tmp_path/'dashboard-repair.db')
     factory=database(target);seed_legacy(factory,candidate)
     monkeypatch.setenv('DATABASE_URL',target)
-    app=AppTest.from_file(str(Path(__file__).resolve().parents[1]/'app.py')).run(timeout=30)
+    app=discovery_dashboard_app_test()
     assert not app.exception
     frame=app.dataframe[0].value
     assert len(frame)==2 and set(frame['Job title'])=={'QA Engineer'}
