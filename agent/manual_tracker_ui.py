@@ -8,9 +8,9 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 
-from agent.db import JobRow, MatchRow
+from agent.db import JobRow, MatchRow, ManualVacancyLead
 from agent.manual_applications import (
-    MANUAL_STATUSES, ImportRejected, import_vacancy,
+    LEAD_EVIDENCE_STATUSES, MANUAL_STATUSES, ImportRejected, add_manual_vacancy, import_vacancy,
     parse_bulk_urls, priority_group, record_for_job, set_manual_application,
 )
 from agent.models import Job, Match
@@ -47,6 +47,7 @@ def _rows(session):
         match_row = session.scalar(select(MatchRow).where(MatchRow.job_id == row.id).order_by(MatchRow.id.desc()))
         match = Match.model_validate_json(match_row.payload) if match_row else None
         tracking = record_for_job(session, row.id)
+        lead = session.scalar(select(ManualVacancyLead).where(ManualVacancyLead.job_id == row.id))
         country, city = _country_city(job.location)
         assessment = match.geographic_assessment.classification if match else 'Unknown'
         geography_reason = '; '.join(match.geographic_assessment.evidence) if match else ''
@@ -58,11 +59,12 @@ def _rows(session):
             'Geographic eligibility': assessment,
             'Geographic evidence': geography_reason or (match.geographic_reason if match else 'No assessment available'),
             'Listing source': job.source_name or job.platform or 'Unknown',
+            'Source verification': lead.evidence_status if lead else ('Structured job posting' if job.source_type != 'manual-import' else 'Unclassified manual import'),
             'Application source': tracking.source if tracking else 'Not recorded',
-            'Official job URL': str(job.url), 'Date discovered': row.first_discovered[:10] if row.first_discovered else 'Unknown',
+            'Job URL': str(job.url), 'Date discovered': row.first_discovered[:10] if row.first_discovered else 'Unknown',
             'Date applied': tracking.applied_date if tracking and tracking.applied_date else '',
             'Application status': tracking.status if tracking else 'New',
-            'Notes': tracking.notes if tracking else '',
+            'Notes': (lead.listing_notes if lead and lead.listing_notes else (tracking.notes if tracking else '')),
             '_priority': priority_group(job),
         })
     return output
@@ -70,7 +72,7 @@ def _rows(session):
 
 def render_manual_tracker(factory):
     st.title('Manual Job Application Tracker')
-    st.caption('Open official job pages, apply manually, and record progress here. No application is submitted by this tracker.')
+    st.caption('Open vacancy pages, apply manually, and record progress here. No application is submitted by this tracker.')
     with factory() as session:
         rows = _rows(session)
         counts = {status: sum(row['Application status'] == status for row in rows) for status in MANUAL_STATUSES}
@@ -103,6 +105,39 @@ def render_manual_tracker(factory):
                 except ImportRejected as exc:
                     st.error(str(exc))
 
+            st.divider()
+            st.markdown('#### Manual entry when a page has no structured job metadata')
+            st.caption('This does not fetch or scrape the page. Enter only details you checked yourself. Unverified entries stay visibly labeled; unknown fields can remain Unknown. LinkedIn and Jobs.md are excluded.')
+            with st.form('manual-vacancy-entry-form'):
+                employer_input = st.text_input('Employer', key='manual-entry-employer')
+                title_input = st.text_input('Job title', key='manual-entry-title')
+                url_input = st.text_input('Individual job URL', key='manual-entry-url', placeholder='https://employer.example/careers/job/123')
+                country_input = st.text_input('Country', value='Unknown', key='manual-entry-country')
+                city_input = st.text_input('City', value='Unknown', key='manual-entry-city')
+                arrangement_input = st.selectbox('Work arrangement', ['Unknown', 'Remote', 'Hybrid', 'Onsite'], key='manual-entry-arrangement')
+                source_input = st.text_input('Source', value='Unknown', key='manual-entry-source')
+                evidence_input = st.selectbox('Source verification', list(LEAD_EVIDENCE_STATUSES), key='manual-entry-evidence')
+                active_input = st.checkbox('I checked that this individual vacancy is currently active', key='manual-entry-active')
+                official_input = st.checkbox('I checked this active vacancy on the employer’s official careers page', key='manual-entry-official')
+                notes_input = st.text_area('Notes', key='manual-entry-notes')
+                add_clicked = st.form_submit_button('Add manual vacancy')
+                if add_clicked:
+                    try:
+                        with factory.begin() as write_session:
+                            result = add_manual_vacancy(
+                                write_session, employer=employer_input, title=title_input, url=url_input,
+                                country=country_input, city=city_input, work_arrangement=arrangement_input,
+                                source=source_input, notes=notes_input, evidence_status=evidence_input,
+                                confirmed_active=active_input, confirmed_official=official_input,
+                            )
+                        if result['status'] == 'duplicate':
+                            st.info(f"This URL already exists as vacancy #{result['job_id']}; no duplicate was added.")
+                        else:
+                            st.success(f"Added vacancy #{result['job_id']} as {result['evidence_status']}.")
+                            st.rerun()
+                    except ImportRejected as exc:
+                        st.error(str(exc))
+
         countries = sorted({r['Country'] for r in rows})
         employers = sorted({r['Company'] for r in rows}, key=str.casefold)
         statuses = list(MANUAL_STATUSES)
@@ -134,11 +169,11 @@ def render_manual_tracker(factory):
             filtered.sort(key=lambda r: (r['_priority'], -(r['Match score'] or -1), r['Company'].casefold(), r['ID']))
         st.caption('Geographic priority is a sorting aid; uncertain eligibility remains visible, and professional score is shown separately. Unknown fields are not inferred.')
         display_columns = ['ID', 'Company', 'Job title', 'Country', 'City', 'Work arrangement',
-                           'Professional match', 'Match score', 'Geographic eligibility', 'Listing source',
-                           'Application source', 'Official job URL', 'Date discovered', 'Date applied', 'Application status', 'Notes']
+                           'Professional match', 'Match score', 'Geographic eligibility', 'Listing source', 'Source verification',
+                           'Application source', 'Job URL', 'Date discovered', 'Date applied', 'Application status', 'Notes']
         st.dataframe(pd.DataFrame([{key: row[key] for key in display_columns} for row in filtered]),
                      hide_index=True, use_container_width=True,
-                     column_config={'Official job URL': st.column_config.LinkColumn('Official job URL', validate='^https://.*$')},
+                     column_config={'Job URL': st.column_config.LinkColumn('Job URL', validate='^https://.*$')},
                      height=430)
         csv = pd.DataFrame([{key: row[key] for key in display_columns} for row in filtered]).to_csv(index=False).encode('utf-8-sig')
         st.download_button('Export filtered vacancies as CSV', csv, 'manual_job_application_tracker.csv', 'text/csv', key='manual-tracker-csv')
@@ -159,9 +194,9 @@ def render_manual_tracker(factory):
         st.session_state['manual_tracker_selected_id'] = selected_id
         selected = next(row for row in filtered if row['ID'] == selected_id)
         with st.container(border=True):
-            st.markdown(f"### [{html.escape(selected['Job title'])}]({selected['Official job URL']})")
+            st.markdown(f"### [{html.escape(selected['Job title'])}]({selected['Job URL']})")
             st.write(f"**{selected['Company']}** · {selected['Country']} · {selected['City']} · {selected['Work arrangement']}")
-            st.link_button('Open original vacancy page', selected['Official job URL'])
+            st.link_button('Open original vacancy page', selected['Job URL'])
             st.write(f"**Professional match:** {selected['Professional match']} · {selected['Match score'] if selected['Match score'] is not None else 'Not scored'}")
             st.write(f"**Geographic eligibility:** {selected['Geographic eligibility']}")
             if selected['Geographic evidence']:

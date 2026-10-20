@@ -7,9 +7,9 @@ from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import sessionmaker
 from streamlit.testing.v1 import AppTest
 
-from agent.db import Base, Company, Source, JobRow, JobObservation, MatchRow, ApplicationRecord, ManualApplicationRecord
+from agent.db import Base, Company, Source, JobRow, JobObservation, MatchRow, ApplicationRecord, ManualApplicationRecord, ManualVacancyLead
 from agent.manual_applications import (
-    APPLIED_SOURCE, ImportRejected, confirm_manual_applications, import_vacancy,
+    APPLIED_SOURCE, ImportRejected, add_manual_vacancy, confirm_manual_applications, import_vacancy,
     normalize_job_url, parse_bulk_urls, set_manual_application, fetch_vacancy, _job_posting_jsonld,
 )
 from agent.manual_applications import is_relevant_vacancy
@@ -124,6 +124,69 @@ def test_import_relevance_rejects_unrelated_industrial_roles(db):
         import_vacancy(session, posting['url'], posting=posting)
 
 
+def test_manual_entry_keeps_missing_fields_unknown_and_review_status_unchanged(db):
+    with db.begin() as session:
+        result = add_manual_vacancy(
+            session, employer='Candidate-supplied Employer', title='QA Engineer',
+            url='https://careers.example.test/jobs/qa-1', country='Unknown', city='Unknown',
+            work_arrangement='Unknown', source='Employer career page', notes='Check location eligibility.',
+        )
+        assert result['status'] == 'imported'
+        assert result['evidence_status'] == 'Candidate-entered / unverified'
+        created = session.get(JobRow, result['job_id'])
+        job = Job.model_validate_json(created.payload)
+        assert (job.location, job.remote, job.description, job.requirements) == ('Unknown', 'Unknown', 'Unknown', 'Unknown')
+        assert created.status == 'New'
+        assert session.scalar(select(ManualApplicationRecord).where(ManualApplicationRecord.job_id == created.id)).notes == 'Check location eligibility.'
+        lead = session.scalar(select(ManualVacancyLead).where(ManualVacancyLead.job_id == created.id))
+        assert lead.evidence_status == 'Candidate-entered / unverified'
+        assert (lead.country, lead.city) == ('Unknown', 'Unknown')
+        assert session.get(JobRow, 101).status == 'Shortlisted'
+
+
+def test_manual_entry_verification_requires_candidate_attestation(db):
+    with db.begin() as session, pytest.raises(ImportRejected, match='currently active'):
+        add_manual_vacancy(
+            session, employer='Example Employer', title='QA Engineer',
+            url='https://careers.example.test/jobs/qa-verified',
+            evidence_status='Third-party listing verified',
+        )
+    with db.begin() as session, pytest.raises(ImportRejected, match='official career site'):
+        add_manual_vacancy(
+            session, employer='Example Employer', title='QA Engineer',
+            url='https://careers.example.test/jobs/qa-official',
+            evidence_status='Official employer verified', confirmed_active=True,
+        )
+    with db.begin() as session:
+        result = add_manual_vacancy(
+            session, employer='Example Employer', title='QA Engineer',
+            url='https://careers.example.test/jobs/qa-official', country='Romania', city='Bucharest',
+            work_arrangement='Remote', evidence_status='Official employer verified',
+            confirmed_active=True, confirmed_official=True,
+        )
+        lead = session.scalar(select(ManualVacancyLead).where(ManualVacancyLead.job_id == result['job_id']))
+        assert lead.evidence_status == 'Official employer verified'
+
+
+def test_manual_entry_deduplicates_against_discovery_and_prior_manual_entries(db):
+    with db.begin() as session:
+        existing = add_manual_vacancy(
+            session, employer='Example QA Employer', title='QA Engineer',
+            url='https://boards.greenhouse.io/example/jobs/101',
+        )
+        assert existing['status'] == 'duplicate' and existing['job_id'] == 101
+        added = add_manual_vacancy(
+            session, employer='Candidate-supplied Employer', title='QA Engineer',
+            url='https://careers.example.test/jobs/duplicate',
+        )
+        duplicate = add_manual_vacancy(
+            session, employer='Candidate-supplied Employer', title='Different title ignored for duplicate',
+            url='https://careers.example.test/jobs/duplicate?utm_source=email',
+        )
+        assert added['status'] == 'imported'
+        assert duplicate['status'] == 'duplicate' and duplicate['job_id'] == added['job_id']
+
+
 @pytest.mark.parametrize('title', [
     'Senior QA Engineer', 'Manual QA Analyst', 'QA Automation Engineer', 'Software Tester',
     'Software Test Engineer', 'SDET', 'Software Quality Engineer', 'Test Automation Engineer',
@@ -223,3 +286,30 @@ def test_manual_tracker_app_test_saves_only_manual_state(tmp_path, monkeypatch, 
     next(widget for widget in app.selectbox if widget.label == 'Filter by application status').select('Applied').run()
     assert app.dataframe[0].value['ID'].tolist() == [101]
     assert any(button.label == 'Export filtered vacancies as CSV' for button in app.get('download_button'))
+
+
+def test_manual_tracker_app_test_adds_unverified_manual_vacancy(tmp_path, monkeypatch):
+    target = 'sqlite:///' + str(tmp_path / 'manual-entry-ui.db')
+    monkeypatch.setenv('DATABASE_URL', target)
+    from agent.db import database as get_database
+    factory = get_database(target)
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    assert not app.exception
+    for label, value in {
+        'Employer': 'Candidate-supplied Example',
+        'Job title': 'QA Engineer',
+        'Individual job URL': 'https://careers.example.test/jobs/qa',
+        'Country': 'Unknown',
+        'City': 'Unknown',
+        'Source': 'Employer career page',
+    }.items():
+        next(widget for widget in app.text_input if widget.label == label).set_value(value)
+    next(button for button in app.get('form_submit_button') if button.label == 'Add manual vacancy').click().run()
+    assert not app.exception
+    with factory() as session:
+        row = session.scalar(select(JobRow).where(JobRow.canonical_url == 'https://careers.example.test/jobs/qa'))
+        assert row is not None and row.status == 'New'
+        job = Job.model_validate_json(row.payload)
+        assert job.location == 'Unknown' and job.remote == 'Unknown'
+        lead = session.scalar(select(ManualVacancyLead).where(ManualVacancyLead.job_id == row.id))
+        assert lead.evidence_status == 'Candidate-entered / unverified'
