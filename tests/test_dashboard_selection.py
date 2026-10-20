@@ -3,6 +3,7 @@ import json
 
 from sqlalchemy import select
 from streamlit.testing.v1 import AppTest
+from tests.support import discovery_dashboard_app_test
 
 from agent.db import Company, JobRow, MatchRow, Source, database
 from agent.discovery import upsert_job
@@ -52,7 +53,7 @@ def test_same_title_rows_select_distinct_vacancy_details(tmp_path, monkeypatch, 
     monkeypatch.setenv('DATABASE_URL', target)
     factory = database(target)
     first_id, second_id = _seed_same_title_jobs(factory, candidate)
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    app = discovery_dashboard_app_test()
     assert not app.exception
     assert app.dataframe[0].value['Job title'].tolist() == ['QA Engineer', 'QA Engineer']
 
@@ -78,7 +79,7 @@ def test_selection_persists_when_visible_and_clears_when_filtered_out(tmp_path, 
     monkeypatch.setenv('DATABASE_URL', target)
     factory = database(target)
     first_id, second_id = _seed_same_title_jobs(factory, candidate)
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    app = discovery_dashboard_app_test()
 
     _select_vacancy(app, second_id)
     next(widget for widget in app.multiselect if widget.label == 'Region').select('Romania').run()
@@ -99,7 +100,7 @@ def test_review_status_is_saved_to_selected_id_and_survives_reruns(tmp_path, mon
     monkeypatch.setenv('DATABASE_URL', target)
     factory = database(target)
     first_id, second_id = _seed_same_title_jobs(factory, candidate)
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    app = discovery_dashboard_app_test()
 
     _select_vacancy(app, second_id)
     next(widget for widget in app.selectbox if widget.label == 'Update review status').select('Shortlisted').run()
@@ -128,7 +129,7 @@ def test_selected_indicator_and_status_follow_id_when_sort_order_changes(tmp_pat
         first.payload, second.payload = json.dumps(first_payload), json.dumps(second_payload)
         session.commit()
 
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    app = discovery_dashboard_app_test()
     assert not app.exception
     assert next(widget for widget in app.selectbox if widget.label == 'Rank by').value == 'Professional score'
     assert app.dataframe[0].value['ID'].tolist() == [second_id, first_id]

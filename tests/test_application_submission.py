@@ -8,6 +8,7 @@ from pydantic import HttpUrl
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from streamlit.testing.v1 import AppTest
+from tests.support import discovery_dashboard_app_test
 
 from agent.application_submission import (
     APPLICATION_STATES,
@@ -763,7 +764,7 @@ def test_dashboard_shows_exact_snapshot_and_requires_current_confirmation(
                         lambda *args, **kwargs: submit_calls.append((args, kwargs)) or {'status': 'Submitted'})
     monkeypatch.setattr(workflow, '_launch_from_dashboard', lambda job_id: None)
 
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py')).run(timeout=30)
+    app = discovery_dashboard_app_test()
     assert not app.exception
     frame = app.dataframe[0].value
     row_index = int(frame.index[frame['ID'] == 4][0])
